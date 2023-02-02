@@ -51,12 +51,12 @@ if __name__ == '__main__':
     constructed_graph = False
 
     # load graph data
+    # [01/19/2023] James comments out the retain_original_feature argument because the 
+    # OGBTextFeatDataset does not have this argument in the current version.
     if args.dataset == 'ogbn-arxiv':
-        dataset = OGBTextFeatDataset(args.filepath, args.dataset,
-                                     edge_pct=args.edge_pct)
+        dataset = OGBTextFeatDataset(args.filepath, args.dataset, edge_pct=args.edge_pct)
     elif args.dataset == 'ogbn-products':
-        dataset = OGBTextFeatDataset(args.filepath, args.dataset,
-                                     edge_pct=args.edge_pct)
+        dataset = OGBTextFeatDataset(args.filepath, args.dataset, edge_pct=args.edge_pct)
     elif args.dataset == 'movie-lens-100k':
         dataset = MovieLens100kNCDataset(args.filepath, edge_pct=args.edge_pct)
     elif args.dataset == 'ogbn-papers100M':
