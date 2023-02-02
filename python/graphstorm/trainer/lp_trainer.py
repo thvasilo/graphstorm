@@ -164,10 +164,10 @@ class GSgnnLinkPredictionTrainer(GSgnnTrainer):
 
         print("Peak Mem alloc: {:.4f} MB".format(th.cuda.max_memory_allocated(device) / 1024 /1024))
         if self.rank == 0 and self.evaluator is not None:
-            output = dict(best_test_mrr=self.evaluator.best_test_score,
-                          best_val_mrr=self.evaluator.best_val_score,
-                          peak_mem_alloc_MB=th.cuda.max_memory_allocated(device) / 1024 / 1024,
-                          best_epoch=best_epoch)
+            output = {'best_test_mrr': self.evaluator.best_test_score,
+                       'best_val_mrr':self.evaluator.best_val_score,
+                       'peak_mem_alloc_MB': th.cuda.max_memory_allocated(device) / 1024 / 1024,
+                       'best_epoch': best_epoch}
             self.log_params(output)
 
             if save_perf_results_path is not None:
