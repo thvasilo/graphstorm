@@ -13,8 +13,9 @@ if __name__ == '__main__':
                            help="dataset to use")
     argparser.add_argument("--filepath", type=str, default=None)
     argparser.add_argument('--retain_original_features',  type=lambda x: (str(x).lower() in ['true', '1']),
-                           default=False, help= "whether to use the original features or use the paper title or abstract"
-                                                "for the ogbn-arxiv dataset")
+                           default=True, help= "If true we will use the original features either wise we "
+                                               "will use the tokenized title or abstract"
+                                                "for the ogbn datasets")
     argparser.add_argument('--num_parts', type=int, default=4,
                            help='number of partitions')
     argparser.add_argument('--predict_ntypes', type=str, help='The node types for making prediction. '
@@ -40,11 +41,14 @@ if __name__ == '__main__':
 
     # load graph data
     if args.dataset == 'ogbn-arxiv':
-        dataset = OGBTextFeatDataset(args.filepath, dataset=args.dataset)
+        dataset = OGBTextFeatDataset(args.filepath, dataset=args.dataset,
+                                     retain_original_features=args.retain_original_features)
     elif args.dataset == 'ogbn-products':
-        dataset = OGBTextFeatDataset(args.filepath, dataset=args.dataset)
+        dataset = OGBTextFeatDataset(args.filepath, dataset=args.dataset,
+                                     retain_original_features=args.retain_original_features)
     elif args.dataset == 'ogbn-papers100m':
-        dataset = OGBTextFeatDataset(args.filepath, dataset=args.dataset)
+        dataset = OGBTextFeatDataset(args.filepath, dataset=args.dataset,
+                                     retain_original_features=args.retain_original_features)
     elif args.dataset == 'movie-lens-100k':
         dataset = MovieLens100kNCDataset(args.filepath)
     else:

@@ -6,9 +6,9 @@ import dgl
 import torch as th
 import psutil
 
-from .dataset import GSgnnDataset
+from .text_dataset import GSgnnTextDataset
 
-class OGBTextFeatDataset(GSgnnDataset):
+class OGBTextFeatDataset(GSgnnTextDataset):
     """ This class can be used for ogbn-arxiv, ogbn-papers100M and ogbn-products datasets.
 
     The text features are collected from the original titles and abstractrs of the papers
@@ -22,6 +22,8 @@ class OGBTextFeatDataset(GSgnnDataset):
     dataset : str
         The name of the dataset. It has to be either "ogbn-products", "ogbn-arxiv"
         and "ogbn-papers100M".
+    edge_pct : float
+        Percentage of edges in the test set
     force_reload : bool
     verbose : bool
         Whether to print additional messages.
@@ -31,13 +33,17 @@ class OGBTextFeatDataset(GSgnnDataset):
         Whether we include self edges
     max_sequence_length : int
         The maximum supported sequence length
-    edge_pct : float
-        Percentage of edges in the test set
+    retain_original_features : Boolean
+        Whether to use the original features or the bert generated ones
+    bert_model_name : String
+        The bert model used for tokenization
     """
     def __init__(self, raw_dir, dataset, edge_pct=1,
                  force_reload=False, verbose=True,
                  reverse_edge=True, self_loop=False,
-                 max_sequence_length=512):
+                 max_sequence_length=512,
+                 retain_original_features=True,
+                 bert_model_name='bert-base-uncased'):
         """
 
         """
@@ -55,6 +61,8 @@ class OGBTextFeatDataset(GSgnnDataset):
             self._num_classes = 40
         elif dataset == "ogbn-papers100M":
             self._num_classes = 172
+        self.retain_original_features = retain_original_features
+        self.bert_model_name=bert_model_name
         super(OGBTextFeatDataset, self).__init__(self._name,
                                                  url=self._url,
                                                  raw_dir=raw_dir,
@@ -98,6 +106,23 @@ class OGBTextFeatDataset(GSgnnDataset):
         """
         data = DglNodePropPredDataset(name=self._dataset)
         print("Graph nodes ={}".format(data.graph[0].num_nodes()))
+
+        # If we don't retain the original node features, we use text tokens as node features.
+        if not self.retain_original_features:
+            # this file contains the text data each line corresponds to a node id
+            with open(os.path.join(self._raw_dir, "X.all.txt"),
+                      "r", encoding='utf-8') as fin:
+                text_feats_list = fin.readlines()
+            assert len(text_feats_list) == data.graph[0].num_nodes()
+            print("|node_text_list={}".format(len(text_feats_list)))
+
+            # We tokenize the text before loading the ogbn graph into memory.
+            # This helps reduce the overhead of creating multiple worker processes
+            # during text tokenization. When a graph is large (e.g., papers100m),
+            # the overhead is not nigligiable.
+            self._raw_text_feat = {'node':text_feats_list}
+            text_feat = self.tokenize_text(self.max_sequence_length,
+                                           bert_model_name=self.bert_model_name)
 
         splitted_idx = data.get_idx_split()
         train_idx = splitted_idx["train"]
@@ -184,6 +209,17 @@ class OGBTextFeatDataset(GSgnnDataset):
               This is the original input of ogbn.")
         self._g.nodes['node'].data['feat'] = graph.ndata["feat"]
 
+        if self.retain_original_features:
+            print("Retaining original node features and "
+                  "discarding the text data. This is the original input of ogbn.")
+            self._g.nodes['node'].data['feat'] = graph.ndata["feat"]
+            self._raw_text_feat = {}
+        else:
+            # tokenize the original text
+            for ntype in self._g.ntypes:
+                for name in text_feat[ntype]:
+                    self._g.nodes[ntype].data[name] = text_feat[ntype][name]
+
     def __getitem__(self, idx):
         r"""Gets the data object at index.
         """
@@ -204,3 +240,13 @@ class OGBTextFeatDataset(GSgnnDataset):
         """The number of classess of labels
         """
         return self._num_classes
+
+    def _download_bert_embeddings(self):
+        """
+        This function downloads the bert embedding
+        that are uploaded in the s3 if these exists otherwise None.
+        Returns
+        -------
+        The embeddings dictionary
+        """
+        raise NotImplementedError
