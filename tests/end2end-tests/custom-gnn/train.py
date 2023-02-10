@@ -26,7 +26,16 @@ class MyGNNModel(gsmodel.GSgnnNodeModelBase):
         emb = embs[target_ntype]
         labels = labels[target_ntype]
         logits = self._decoder(emb)
-        return self._loss_fn(logits, labels)
+        
+        pred_loss = self._loss_fn(logits, labels)
+        # L2 regularization of trainable parameters, this also solves the unused weights error
+        reg_loss = th.tensor(0.).to(pred_loss.device)
+        for d_para in self.parameters():
+            reg_loss += d_para.square().sum()
+        reg_loss = 0. * reg_loss
+
+        total_loss = pred_loss + reg_loss
+        return total_loss
 
     def predict(self, blocks, node_feats, _):
         input_nodes = {ntype: blocks[0].srcnodes[ntype].data[dgl.NID].cpu() \
