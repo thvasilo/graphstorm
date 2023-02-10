@@ -17,15 +17,15 @@ import torch as th
 from numpy.testing import assert_almost_equal
 import numpy as np
 
-from graphstorm.eval.utils import fullgraph_eval
 from graphstorm.eval import GSgnnAccEvaluator
 from graphstorm.eval import GSgnnRegressionEvaluator
+from graphstorm.eval import GSgnnMrrLPEvaluator
 
 from util import Dummy
 
 from test_evaluator import gen_hg
 
-def run_dist_lp_eval_worker(worker_rank, hg, embs, r_emb, pos_eids, etypes, conn):
+def run_dist_lp_eval_worker(worker_rank, train_data, config, val_scores, test_scores, conn):
     dist_init_method = 'tcp://{master_ip}:{master_port}'.format(
         master_ip='127.0.0.1', master_port='12345')
     th.distributed.init_process_group(backend="gloo",
@@ -33,33 +33,22 @@ def run_dist_lp_eval_worker(worker_rank, hg, embs, r_emb, pos_eids, etypes, conn
                                       world_size=2,
                                       rank=worker_rank)
 
-    def rank():
-        return worker_rank
-    setattr(hg, "rank", rank)
-
-    metrics = {}
-    for i, etype in enumerate(etypes):
-        metrics_etype = fullgraph_eval(hg, embs,
-            r_emb[i] if r_emb is not None else None,
-            'cuda:0', etype, pos_eids[etype],
-            num_negative_edges_eval=-1)
-        metrics[etype] = metrics_etype
+    lp_eval = GSgnnMrrLPEvaluator(config, train_data)
+    val_sc, test_sc = lp_eval.evaluate(val_scores, test_scores, 0)
 
     if worker_rank == 0:
-        conn.send(metrics)
-        th.distributed.destroy_process_group()
+        conn.send((val_sc, test_sc))
+    th.distributed.destroy_process_group()
 
-def run_dist_lp_eval(hg, embs, r_emb, pos_eids, etypes):
-    # split pos_eids into two
-    pos_eids_0 = {etype: eids[0:len(eids)//2] for etype, eids, in pos_eids.items()}
-    pos_eids_1 = {etype: eids[len(eids)//2:] for etype, eids, in pos_eids.items()}
-
+def run_dist_lp_eval(train_data, config,
+        val_scores_0, val_scores_1,
+        test_scores_0, test_scores_1):
     ctx = mp.get_context('spawn')
     conn1, conn2 = mp.Pipe()
     p0 = ctx.Process(target=run_dist_lp_eval_worker,
-                     args=(0, hg, embs, r_emb, pos_eids_0, etypes, conn2))
+                     args=(0, train_data, config, val_scores_0, test_scores_0, conn2))
     p1 = ctx.Process(target=run_dist_lp_eval_worker,
-                     args=(1, hg, embs, r_emb, pos_eids_1, etypes, None))
+                     args=(1, train_data, config, val_scores_1, test_scores_1, None))
     p0.start()
     p1.start()
     p0.join()
@@ -68,26 +57,26 @@ def run_dist_lp_eval(hg, embs, r_emb, pos_eids, etypes):
     assert p0.exitcode == 0
     assert p1.exitcode == 0
 
-    dist_result = conn1.recv()
+    val_scores, test_scores = conn1.recv()
     conn1.close()
     conn2.close()
-    return dist_result
+    return val_scores, test_scores
 
-def run_local_lp_eval(hg, embs, r_emb, pos_eids, etypes):
+def run_local_lp_eval(train_data, config, val_scores, test_scores):
     ctx = mp.get_context('spawn')
     conn1, conn2 = mp.Pipe()
-    p = ctx.Process(target=fun_local_lp_eval_worker,
-                    args=(hg, embs, r_emb, pos_eids, etypes, conn2))
+    p = ctx.Process(target=run_local_lp_eval_worker,
+                    args=(train_data, config, val_scores, test_scores, conn2))
     p.start()
     p.join()
     assert p.exitcode == 0
 
-    dist_result = conn1.recv()
+    val_scores, test_scores = conn1.recv()
     conn1.close()
     conn2.close()
-    return dist_result
+    return val_scores, test_scores
 
-def fun_local_lp_eval_worker(hg, embs, r_emb, pos_eids, etypes, conn):
+def run_local_lp_eval_worker(train_data, config, val_scores, test_scores, conn):
     dist_init_method = 'tcp://{master_ip}:{master_port}'.format(
         master_ip='127.0.0.1', master_port='12346')
     th.distributed.init_process_group(backend="gloo",
@@ -95,77 +84,78 @@ def fun_local_lp_eval_worker(hg, embs, r_emb, pos_eids, etypes, conn):
                                       world_size=1,
                                       rank=0)
 
-    def rank():
-        return rank
-    setattr(hg, "rank", rank)
-
-    metrics = {}
-    for i, etype in enumerate(etypes):
-        metrics_etype = fullgraph_eval(hg, embs,
-            r_emb[i] if r_emb is not None else None,
-            'cuda:0', etype, pos_eids[etype],
-            num_negative_edges_eval=-1)
-
-        metrics[etype] = metrics_etype
-    conn.send(metrics)
+    lp_eval = GSgnnMrrLPEvaluator(config, train_data)
+    val_sc, test_sc = lp_eval.evaluate(val_scores, test_scores, 0)
+    conn.send((val_sc, test_sc))
     th.distributed.destroy_process_group()
 
-@pytest.mark.parametrize("dot_product", [True, False])
 @pytest.mark.parametrize("seed", [41, 42])
-def test_lp_dist_eval(dot_product, seed):
+def test_lp_dist_eval(seed):
     """ distributed evaluation is implemented in graphstorm.model.utils.fullgraph_eval
     """
     th.manual_seed(seed)
     # Use full nodes as negative
     # Create a random heterogenous graph first
-    hg = gen_hg()
-
-    n0_emb = th.rand((100, 64), dtype=th.float32) * 2 - 1 # data range (-1, 1)
-    n1_emb = th.rand((100, 64), dtype=th.float32)
-    n0_emb = n0_emb.share_memory_()
-    n1_emb = n1_emb.share_memory_()
-    embs = {
-        "n0": n0_emb,
-        "n1": n1_emb,
-    }
-    if dot_product is False:
-        r_emb = th.rand((2, 64), dtype=th.float32) * 2 - 1 # data range (-1, 1)
-        r_emb = r_emb.share_memory_()
-    else:
-        r_emb = None
-
-    pos_eids = {
-        ("n0", "r0", "n1"): th.arange(100),
-        ("n0", "r1", "n1"): th.arange(200),
-    }
     etypes = [("n0", "r0", "n1"), ("n0", "r1", "n1")]
 
-    # do evaluation with two workers
-    metrics_dist = run_dist_lp_eval(hg, embs, r_emb, pos_eids, etypes)
-    # do evaluation with single worker
-    metrics_local = run_local_lp_eval(hg, embs, r_emb, pos_eids, etypes)
+    val_pos_scores = th.rand((10,1))
+    val_neg_scores = th.rand((10,10))
+    val_scores_0 = {
+        ("n0", "r0", "n1") : [(val_pos_scores, val_neg_scores / 2), (val_pos_scores, val_neg_scores / 2)],
+        ("n0", "r1", "n1") : [(val_pos_scores, val_neg_scores / 4)]
+    }
+    val_pos_scores = th.rand((10,1))
+    val_neg_scores = th.rand((10,10))
+    val_scores_1 = {
+        ("n0", "r0", "n1") : [(val_pos_scores, val_neg_scores / 2), (val_pos_scores, val_neg_scores / 2)],
+        ("n0", "r1", "n1") : [(val_pos_scores, val_neg_scores / 4)]
+    }
 
-    print(f"dist {metrics_dist}")
-    print(f"local {metrics_local}")
-    for etype in etypes:
-        # Make sure keys' order is deterministic
-        metrics_keys = list(metrics_local[etype].keys())
-        for key in metrics_keys:
-            if key == "MR":
-                assert_almost_equal(
-                    np.array(metrics_dist[etype][key]),
-                    np.array(metrics_local[etype][key]),
-                    decimal=1)
-            elif key == "MRR": # MRR
-                assert_almost_equal(
-                    np.array(metrics_dist[etype][key]),
-                    np.array(metrics_local[etype][key]),
-                    decimal=3)
-            else:
-                assert_almost_equal(
-                    np.array(metrics_dist[etype][key]),
-                    np.array(metrics_local[etype][key]),
-                    decimal=7)
+    test_pos_scores = th.rand((10,1))
+    test_neg_scores = th.rand((10,10))
+    test_scores_0 = {
+        ("n0", "r0", "n1") : [(test_pos_scores, test_neg_scores / 2), (test_pos_scores, test_neg_scores / 2)],
+        ("n0", "r1", "n1") : [(test_pos_scores, test_neg_scores / 4)]
+    }
+    test_pos_scores = th.rand((10,1))
+    test_neg_scores = th.rand((10,10))
+    test_scores_1 = {
+        ("n0", "r0", "n1") : [(test_pos_scores, test_neg_scores / 2), (test_pos_scores, test_neg_scores / 2)],
+        ("n0", "r1", "n1") : [(test_pos_scores, test_neg_scores / 4)]
+    }
+
+    # Dummy objects
+    train_data = Dummy({
+            "train_idxs": th.randint(10, (10,)),
+            "val_idxs": th.randint(10, (10,)),
+            "test_idxs": th.randint(10, (10,)),
+        })
+    config = Dummy({
+            "num_negative_edges_eval": 10,
+            "use_dot_product": True,
+            "evaluation_frequency": 100,
+            "no_validation": False,
+            "enable_early_stop": False,
+            "eval_metric": ["mrr"]
+        })
+
+    # do evaluation with two workers
+    val_dist, test_dist = run_dist_lp_eval(train_data, config,
+        val_scores_0, val_scores_1,
+        test_scores_0, test_scores_1)
+    # do evaluation with single worker
+    val_local, test_local = run_local_lp_eval(train_data, config,
+        {etypes[0]: val_scores_0[etypes[0]] + val_scores_1[etypes[0]],
+         etypes[1]: val_scores_0[etypes[1]] + val_scores_1[etypes[1]]},
+        {etypes[0]: test_scores_0[etypes[0]] + test_scores_1[etypes[0]],
+         etypes[1]: test_scores_0[etypes[1]] + test_scores_1[etypes[1]]})
+
+    print(f"dist {val_dist}")
+    print(f"local {val_local}")
+    assert_almost_equal(np.array(val_dist["mrr"]),
+        np.array(val_local["mrr"]), decimal=5)
+    assert_almost_equal(np.array(test_dist["mrr"]),
+        np.array(test_local["mrr"]), decimal=5)
 
 def run_dist_nc_eval_worker(eval_config, worker_rank, metric, val_pred, test_pred,
     val_labels0, val_labels1, val_labels2, test_labels, backend, conn):
@@ -477,10 +467,8 @@ def test_nc_dist_regression_eval(metric, seed, backend):
             decimal=8)
 
 if __name__ == '__main__':
-    #test_lp_dist_eval(dot_product=False, seed=41)
-    #test_lp_dist_eval(dot_product=True, seed=41)
-    #test_lp_dist_eval(dot_product=False, seed=42)
-    #test_lp_dist_eval(dot_product=True, seed=42)
+    test_lp_dist_eval(seed=41)
+    test_lp_dist_eval(seed=42)
 
     #test_nc_dist_eval(["accuracy"], seed=41, backend="gloo")
     #test_nc_dist_eval(["f1_score"], seed=41, backend="nccl")

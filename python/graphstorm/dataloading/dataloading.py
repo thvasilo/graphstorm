@@ -9,7 +9,7 @@ from dgl.dataloading import DistDataLoader
 from dgl.dataloading import EdgeCollator
 from dgl.dataloading.dist_dataloader import _remove_kwargs_dist
 
-from .sampler import LocalUniform, JointUniform
+from .sampler import LocalUniform, JointUniform, GlobalUniform
 from .utils import trim_data, modify_fanout_for_target_etype
 
 ################ Minibatch DataLoader (Edge Prediction) #######################
@@ -439,6 +439,87 @@ class GSgnnAllEtypeLPJointNegDataLoader(GSgnnAllEtypeLinkPredictionDataLoader):
     def _prepare_negative_sampler(self, num_negative_edges):
         # the default negative sampler is uniform sampler
         negative_sampler = JointUniform(num_negative_edges)
+        return negative_sampler
+
+class GSgnnLinkPredictionTestDataLoader():
+    """ Link prediction minibatch dataloader for validation and test.
+    In order to efficiently compute positive and negative scores for
+    link prediction tasks, GSgnnLinkPredictionTestDataLoader is designed
+    to only generates edges, i.e., (src, dst) pairs.
+
+    The negative edges are sampled uniformly.
+
+    Argument
+    --------
+    dataset: GSgnnEdgeData
+        The GraphStorm edge dataset
+    target_idx : dict of Tensors
+        The target edges for prediction
+    batch_size: int
+        Batch size
+    num_negative_edges: int
+        The number of negative edges per positive edge
+    """
+    def __init__(self, dataset, target_idx, batch_size, num_negative_edges):
+        self._data = dataset
+        for etype in target_idx:
+            assert etype in dataset.g.canonical_etypes, \
+                    "edge type {} does not exist in the graph".format(etype)
+        self._batch_size = batch_size
+        self._target_idx = target_idx
+        self._negative_sampler = self._prepare_negative_sampler(num_negative_edges)
+        self._reinit_dataset()
+
+    def _reinit_dataset(self):
+        """ Reinitialize the dataset
+        """
+        self._current_pos = {etype:0 for etype, _ in self._target_idx.items()}
+        self.remaining_etypes = list(self._target_idx.keys())
+
+    def _prepare_negative_sampler(self, num_negative_edges):
+        # the default negative sampler is uniform sampler
+        self._neg_sample_type = BUILTIN_LP_UNIFORM_NEG_SAMPLER
+        negative_sampler = GlobalUniform(num_negative_edges)
+        return negative_sampler
+
+    def __iter__(self):
+        self._reinit_dataset()
+        return self
+
+    def _next_data(self, etype):
+        """ Get postive edges for the next iteration for a specific edge type
+        """
+        g = self._data.g
+        current_pos = self._current_pos[etype]
+        end_of_etype = current_pos + self._batch_size >= len(self._target_idx[etype])
+        pos_eids = self._target_idx[etype][current_pos:] if end_of_etype \
+            else self._target_idx[etype][current_pos:current_pos+self._batch_size]
+        pos_pairs = g.find_edges(pos_eids, etype=etype)
+        pos_neg_tuple = self._negative_sampler.gen_neg_pairs(g, {etype:pos_pairs})
+        self._current_pos[etype] += self._batch_size
+        return pos_neg_tuple, end_of_etype
+
+    def __next__(self):
+        if len(self.remaining_etypes) == 0:
+            raise StopIteration
+
+        curr_etype = self.remaining_etypes[0]
+        cur_iter, end_of_etype = self._next_data(curr_etype)
+        if end_of_etype:
+            self.remaining_etypes.pop(0)
+
+        # return pos, neg pairs
+        return cur_iter, self._neg_sample_type
+
+class GSgnnLinkPredictionJointTestDataLoader(GSgnnLinkPredictionTestDataLoader):
+    """ Link prediction minibatch dataloader for validation and test
+        with joint negative sampler
+    """
+
+    def _prepare_negative_sampler(self, num_negative_edges):
+        # the default negative sampler is uniform sampler
+        negative_sampler = JointUniform(num_negative_edges)
+        self._neg_sample_type = BUILTIN_LP_JOINT_NEG_SAMPLER
         return negative_sampler
 
 ################ Minibatch DataLoader (Node classification) #######################

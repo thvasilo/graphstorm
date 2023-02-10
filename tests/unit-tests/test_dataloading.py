@@ -14,6 +14,10 @@ from graphstorm.dataloading import GSgnnEdgeTrainData, GSgnnEdgeInferData
 from graphstorm.dataloading import GSgnnAllEtypeLinkPredictionDataLoader
 from graphstorm.dataloading import GSgnnNodeDataLoader, GSgnnEdgeDataLoader
 from graphstorm.dataloading import GSgnnLinkPredictionDataLoader
+from graphstorm.dataloading import GSgnnLinkPredictionTestDataLoader
+from graphstorm.dataloading import GSgnnLinkPredictionJointTestDataLoader
+from graphstorm.dataloading import BUILTIN_LP_UNIFORM_NEG_SAMPLER
+from graphstorm.dataloading import BUILTIN_LP_JOINT_NEG_SAMPLER
 
 from numpy.testing import assert_equal
 
@@ -353,6 +357,117 @@ def test_lp_dataloader():
     # after test pass, destroy all process group
     th.distributed.destroy_process_group()
 
+# initialize the torch distributed environment
+@pytest.mark.parametrize("batch_size", [1, 10, 128])
+@pytest.mark.parametrize("num_negative_edges", [1, 16, 128])
+def test_GSgnnLinkPredictionTestDataLoader(batch_size, num_negative_edges):
+    th.distributed.init_process_group(backend='nccl',
+                                      init_method='tcp://127.0.0.1:23456',
+                                      rank=0,
+                                      world_size=1)
+    test_etypes = [("n0", "r1", "n1"), ("n0", "r0", "n1")]
+    with tempfile.TemporaryDirectory() as tmpdirname:
+        # get the test dummy distributed graph
+        _, part_config = generate_dummy_dist_graph(graph_name='dummy', dirname=tmpdirname)
+        lp_data = GSgnnEdgeTrainData(graph_name='dummy', part_config=part_config,
+                                     train_etypes=test_etypes, label_field='label')
+        g = lp_data.g
+
+        dataloader = GSgnnLinkPredictionTestDataLoader(
+            lp_data,
+            target_idx=lp_data.train_idxs, # use train edges as val or test edges
+            batch_size=batch_size,
+            num_negative_edges=num_negative_edges)
+
+        total_edges = {etype: len(lp_data.train_idxs[etype]) for etype in test_etypes}
+        num_pos_edges = {etype: 0 for etype in test_etypes}
+        for pos_neg_tuple, sample_type in dataloader:
+            assert sample_type == BUILTIN_LP_UNIFORM_NEG_SAMPLER
+            assert isinstance(pos_neg_tuple, dict)
+            assert len(pos_neg_tuple) == 1
+            for canonical_etype, pos_neg in pos_neg_tuple.items():
+                assert len(pos_neg) == 4
+                pos_src, neg_src, pos_dst, neg_dst = pos_neg
+                assert pos_src.shape == pos_dst.shape
+                assert pos_src.shape[0] == batch_size \
+                    if num_pos_edges[canonical_etype] + batch_size < total_edges[canonical_etype] \
+                    else total_edges[canonical_etype] - num_pos_edges[canonical_etype]
+                eid = lp_data.train_idxs[canonical_etype][num_pos_edges[canonical_etype]: \
+                    num_pos_edges[canonical_etype]+batch_size] \
+                    if num_pos_edges[canonical_etype]+batch_size < total_edges[canonical_etype] \
+                    else lp_data.train_idxs[canonical_etype] \
+                        [num_pos_edges[canonical_etype]:]
+                src, dst = g.find_edges(eid, etype=canonical_etype)
+
+                assert_equal(pos_src.numpy(), src.numpy())
+                assert_equal(pos_dst.numpy(), dst.numpy())
+                num_pos_edges[canonical_etype] += batch_size
+                assert neg_dst.shape[0] == pos_src.shape[0]
+                assert neg_dst.shape[1] == num_negative_edges
+                assert th.all(neg_dst < g.number_of_nodes(canonical_etype[2]))
+
+                assert neg_src.shape[0] == pos_src.shape[0]
+                assert neg_src.shape[1] == num_negative_edges
+                assert th.all(neg_src < g.number_of_nodes(canonical_etype[0]))
+
+    # after test pass, destroy all process group
+    th.distributed.destroy_process_group()
+
+# initialize the torch distributed environment
+@pytest.mark.parametrize("batch_size", [1, 10, 128])
+@pytest.mark.parametrize("num_negative_edges", [1, 16, 128])
+def test_GSgnnLinkPredictionJointTestDataLoader(batch_size, num_negative_edges):
+    th.distributed.init_process_group(backend='nccl',
+                                      init_method='tcp://127.0.0.1:23456',
+                                      rank=0,
+                                      world_size=1)
+    test_etypes = [("n0", "r1", "n1"), ("n0", "r0", "n1")]
+    with tempfile.TemporaryDirectory() as tmpdirname:
+        # get the test dummy distributed graph
+        _, part_config = generate_dummy_dist_graph(graph_name='dummy', dirname=tmpdirname)
+        lp_data = GSgnnEdgeTrainData(graph_name='dummy', part_config=part_config,
+                                     train_etypes=test_etypes, label_field='label')
+        g = lp_data.g
+
+        dataloader = GSgnnLinkPredictionJointTestDataLoader(
+            lp_data,
+            target_idx=lp_data.train_idxs, # use train edges as val or test edges
+            batch_size=batch_size,
+            num_negative_edges=num_negative_edges)
+
+        total_edges = {etype: len(lp_data.train_idxs[etype]) for etype in test_etypes}
+        num_pos_edges = {etype: 0 for etype in test_etypes}
+        for pos_neg_tuple, sample_type in dataloader:
+            assert sample_type == BUILTIN_LP_JOINT_NEG_SAMPLER
+            assert isinstance(pos_neg_tuple, dict)
+            assert len(pos_neg_tuple) == 1
+            for canonical_etype, pos_neg in pos_neg_tuple.items():
+                assert len(pos_neg) == 4
+                pos_src, neg_src, pos_dst, neg_dst = pos_neg
+                assert pos_src.shape == pos_dst.shape
+                assert pos_src.shape[0] == batch_size \
+                    if num_pos_edges[canonical_etype] + batch_size < total_edges[canonical_etype] \
+                    else total_edges[canonical_etype] - num_pos_edges[canonical_etype]
+                eid = lp_data.train_idxs[canonical_etype][num_pos_edges[canonical_etype]: \
+                    num_pos_edges[canonical_etype]+batch_size] \
+                    if num_pos_edges[canonical_etype]+batch_size < total_edges[canonical_etype] \
+                    else lp_data.train_idxs[canonical_etype] \
+                        [num_pos_edges[canonical_etype]:]
+                src, dst = g.find_edges(eid, etype=canonical_etype)
+                assert_equal(pos_src.numpy(), src.numpy())
+                assert_equal(pos_dst.numpy(), dst.numpy())
+                num_pos_edges[canonical_etype] += batch_size
+                assert len(neg_dst.shape) == 1
+                assert neg_dst.shape[0] == num_negative_edges
+                assert th.all(neg_dst < g.number_of_nodes(canonical_etype[2]))
+
+                assert len(neg_src.shape) == 1
+                assert neg_src.shape[0] == num_negative_edges
+                assert th.all(neg_src < g.number_of_nodes(canonical_etype[0]))
+
+    # after test pass, destroy all process group
+    th.distributed.destroy_process_group()
+
 if __name__ == '__main__':
     test_GSgnnNodeData()
     test_GSgnnEdgeData()
@@ -361,3 +476,7 @@ if __name__ == '__main__':
     test_node_dataloader()
     test_GSgnnAllEtypeLinkPredictionDataLoader(10)
     test_GSgnnAllEtypeLinkPredictionDataLoader(1)
+    test_GSgnnLinkPredictionTestDataLoader(1, 1)
+    test_GSgnnLinkPredictionTestDataLoader(10, 20)
+    test_GSgnnLinkPredictionJointTestDataLoader(1, 1)
+    test_GSgnnLinkPredictionJointTestDataLoader(10, 20)

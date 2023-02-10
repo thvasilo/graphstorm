@@ -8,6 +8,7 @@ from ..model.utils import save_embeddings as save_gsgnn_embeddings
 from ..model.utils import save_relation_embeddings
 from ..model.edge_decoder import LinkPredictDistMultDecoder
 from ..model.gnn import do_full_graph_inference
+from ..model.lp_gnn import lp_mini_batch_predict
 
 from ..utils import sys_tracker
 
@@ -26,7 +27,7 @@ class GSgnnLinkPredictionInfer(GSInfer):
     """
 
     # TODO(zhengda) We only support full-graph inference for now.
-    def infer(self, loader, save_embed_path, edge_mask_for_gnn_embeddings='train_mask'):
+    def infer(self, data, loader, save_embed_path, edge_mask_for_gnn_embeddings='train_mask'):
         """ Do inference
 
         The inference can do two things:
@@ -35,7 +36,9 @@ class GSgnnLinkPredictionInfer(GSInfer):
 
         Parameters
         ----------
-        loader : GSLinkPredictionDataLoader
+        data: GSgnnData
+            The GraphStorm dataset
+        loader : GSgnnLinkPredictionTestDataLoader
             The mini-batch sampler for link prediction task.
         save_embed_path : str
             The path where the GNN embeddings will be saved.
@@ -45,19 +48,22 @@ class GSgnnLinkPredictionInfer(GSInfer):
             avoid information leak for link prediction.
         """
         sys_tracker.check('start inferencing')
-        embs = do_full_graph_inference(self._model, loader.data,
+        embs = do_full_graph_inference(self._model, data,
                                        edge_mask=edge_mask_for_gnn_embeddings,
                                        task_tracker=self.task_tracker)
         sys_tracker.check('compute embeddings')
-
-        save_gsgnn_embeddings(save_embed_path, embs, self.rank, th.distributed.get_world_size())
+        if save_embed_path is not None:
+            save_gsgnn_embeddings(save_embed_path, embs, self.rank,
+                th.distributed.get_world_size())
         th.distributed.barrier()
         sys_tracker.check('save embeddings')
 
         if self.evaluator is not None:
             test_start = time.time()
-            val_mrr, test_mrr = self.evaluator.evaluate(embs, self._model.decoder,
-                                                        0, self._model.device)
+            device = th.device(f"cuda:{self.dev_id}") \
+                if self.dev_id >= 0 else th.device("cpu")
+            test_scores = lp_mini_batch_predict(self._model, embs, loader, device)
+            val_mrr, test_mrr = self.evaluator.evaluate(None, test_scores, 0)
             sys_tracker.check('run evaluation')
             if self.rank == 0:
                 self.log_print_metrics(val_score=val_mrr,
@@ -70,4 +76,5 @@ class GSgnnLinkPredictionInfer(GSInfer):
         if self.rank == 0:
             decoder = self._model.decoder
             if isinstance(decoder, LinkPredictDistMultDecoder):
-                save_relation_embeddings(save_embed_path, decoder)
+                if save_embed_path is not None:
+                    save_relation_embeddings(save_embed_path, decoder)

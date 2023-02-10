@@ -80,3 +80,44 @@ class GSgnnLinkPredictionModel(GSgnnModel, GSgnnLinkPredictionModelInterface):
 
         # weighted addition to the total loss
         return pred_loss + alpha_l2norm * reg_loss
+
+def lp_mini_batch_predict(model, emb, loader, device):
+    """ Perform mini-batch prediction.
+
+        This function follows full-grain GNN embedding inference.
+        After having the GNN embeddings, we need to perform mini-batch
+        computation to make predictions on the GNN embeddings.
+
+        Parameters
+        ----------
+        model : GSgnnModel
+            The GraphStorm GNN model
+        emb : dict of Tensor
+            The GNN embeddings
+        loader : GSgnnEdgeDataLoader
+            The GraphStorm dataloader
+        device: th.device
+            Device used to compute test scores
+
+        Returns
+        -------
+        dict of (list, list):
+            Return a dictionary of edge type to
+            (positive scores, negative scores)
+    """
+    decoder = model.decoder
+    with th.no_grad():
+        scores = {}
+        for pos_neg_tuple, neg_sample_type in loader:
+            score = \
+                decoder.calc_test_scores(
+                    emb, pos_neg_tuple, neg_sample_type, device)
+            for canonical_etype, s in score.items():
+                # We do not concatenate pos scores/neg scores
+                # into a single pos score tensor/neg score tensor
+                # to avoid unnecessary data copy.
+                if canonical_etype in scores:
+                    scores[canonical_etype].append(s)
+                else:
+                    scores[canonical_etype] = [s]
+    return scores

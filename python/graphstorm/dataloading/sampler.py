@@ -54,6 +54,53 @@ class LocalUniform(Uniform):
         dst = F.randint(shape, dtype, ctx, 0, self._local_neg_nids[vtype].shape[0])
         return src, self._local_neg_nids[vtype][dst]
 
+class GlobalUniform(Uniform):
+    """Negative sampler that randomly chooses negative destination nodes
+    for each source node according to a uniform distribution.
+    """
+
+    def gen_neg_pairs(self, g, pos_pairs):
+        """Returns negative examples associated with positive examples.
+
+        Parameters
+        ----------
+        g : DGLGraph
+            The graph.
+        pos_pairs : (Tensor, Tensor) or dict[etype, (Tensor, Tensor)]
+            The positive node pairs
+
+        Returns
+        -------
+        tuple[Tensor, Tensor, Tensor, Tensor] or
+        dict[etype, tuple(Tensor, Tensor Tensor, Tensor)
+            The returned [positive source, negative source,
+            postive destination, negatve destination]
+            tuples as pos-neg examples.
+        """
+        def _gen_neg_pair(pos_pair, utype, vtype):
+            """ generate negative pairs
+            """
+            src, pos_dst = pos_pair
+            shape = src.shape
+            ctx = src.device
+            neg_dst = th.randint(g.number_of_nodes(vtype),
+                (shape[0], self.k), device=ctx)
+            neg_src = th.randint(g.number_of_nodes(utype),
+                (shape[0], self.k), device=ctx)
+            return (src, neg_src, pos_dst, neg_dst)
+
+        if isinstance(pos_pairs, Mapping):
+            pos_neg_tuple = {}
+            for canonical_etype, pos_pair in pos_pairs.items():
+                utype, _, vtype = canonical_etype
+                pos_neg_tuple[canonical_etype] = _gen_neg_pair(pos_pair, utype, vtype)
+        else:
+            assert len(g.etypes) == 1, \
+                'please specify a dict of etypes and ids for graphs with multiple edge types'
+            pos_neg_tuple = _gen_neg_pair(pos_pairs,
+                g.canonical_etypes[0][0], g.canonical_etypes[0][2])
+        return pos_neg_tuple
+
 class JointUniform(object):
     '''Jointly corrupt a group of edges.
     The main idea is to sample a set of nodes and use them to corrupt all edges in a mini-batch.
@@ -103,3 +150,48 @@ class JointUniform(object):
             neg_pair = self._generate(g, eids, g.canonical_etypes[0])
 
         return neg_pair
+
+    def gen_neg_pairs(self, g, pos_pairs):
+        """Returns negative examples associated with positive examples.
+
+        Parameters
+        ----------
+        g : DGLGraph
+            The graph.
+        pos_pairs : (Tensor, Tensor) or dict[etype, (Tensor, Tensor)]
+            The positive node pairs
+
+        Returns
+        -------
+        tuple[Tensor, Tensor, Tensor, Tensor] or
+        dict[etype, tuple(Tensor, Tensor Tensor, Tensor)
+            The returned [positive source, negative source,
+            postive destination, negatve destination]
+            tuples as pos-neg examples.
+        Note: we only corrupt destination nodes here. We will
+        set negative source to None.
+        """
+        def _gen_neg_pair(pos_pair, utype, vtype):
+            """ generate negative pairs
+            """
+            src, pos_dst = pos_pair
+            dtype = src.dtype
+            ctx = src.device
+            # only sample k negatives, they will be shared across all pos
+            neg_dst = th.randint(g.number_of_nodes(vtype),
+                (self.k,), dtype=dtype, device=ctx)
+            neg_src = th.randint(g.number_of_nodes(utype),
+                (self.k,), dtype=dtype, device=ctx)
+            return (src, neg_src, pos_dst, neg_dst)
+
+        if isinstance(pos_pairs, Mapping):
+            pos_neg_tuple = {}
+            for canonical_etype, pos_pair in pos_pairs.items():
+                utype, _, vtype = canonical_etype
+                pos_neg_tuple[canonical_etype] = _gen_neg_pair(pos_pair, utype, vtype)
+        else:
+            assert len(g.etypes) == 1, \
+                'please specify a dict of etypes and ids for graphs with multiple edge types'
+            pos_neg_tuple = _gen_neg_pair(pos_pairs,
+                g.canonical_etypes[0][0], g.canonical_etypes[0][2])
+        return pos_neg_tuple

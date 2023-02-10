@@ -12,6 +12,8 @@ from graphstorm.dataloading import GSgnnLPJointNegDataLoader
 from graphstorm.dataloading import GSgnnLPLocalUniformNegDataLoader
 from graphstorm.dataloading import GSgnnAllEtypeLPJointNegDataLoader
 from graphstorm.dataloading import GSgnnAllEtypeLinkPredictionDataLoader
+from graphstorm.dataloading import GSgnnLinkPredictionTestDataLoader
+from graphstorm.dataloading import GSgnnLinkPredictionJointTestDataLoader
 from graphstorm.dataloading import BUILTIN_LP_UNIFORM_NEG_SAMPLER
 from graphstorm.dataloading import BUILTIN_LP_JOINT_NEG_SAMPLER
 from graphstorm.dataloading import BUILTIN_LP_LOCALUNIFORM_NEG_SAMPLER
@@ -38,7 +40,7 @@ def main(args):
     trainer.setup_cuda(dev_id=config.local_rank)
     if not config.no_validation:
         # TODO(zhengda) we need to refactor the evaluator.
-        trainer.setup_evaluator(GSgnnMrrLPEvaluator(train_data.g, config, train_data))
+        trainer.setup_evaluator(GSgnnMrrLPEvaluator(config, train_data))
         assert len(train_data.val_idxs) > 0, "The training data do not have validation set."
         # TODO(zhengda) we need to compute the size of the entire validation set to make sure
         # we have validation data.
@@ -67,8 +69,18 @@ def main(args):
                                 exclude_training_targets=config.exclude_training_targets)
 
     # TODO(zhengda) let's use full-graph inference for now.
-    val_dataloader = None
-    test_dataloader = None
+    if config.test_negative_sampler == BUILTIN_LP_UNIFORM_NEG_SAMPLER:
+        test_dataloader_cls = GSgnnLinkPredictionTestDataLoader
+    elif config.test_negative_sampler == BUILTIN_LP_JOINT_NEG_SAMPLER:
+        test_dataloader_cls = GSgnnLinkPredictionJointTestDataLoader
+    else:
+        raise Exception('Unknown test negative sampler.'
+            'Supported test negative samplers include '
+            f'[{BUILTIN_LP_UNIFORM_NEG_SAMPLER}, {BUILTIN_LP_JOINT_NEG_SAMPLER}]')
+    val_dataloader = test_dataloader_cls(train_data, train_data.val_idxs,
+        config.eval_batch_size, config.num_negative_edges_eval)
+    test_dataloader = test_dataloader_cls(train_data, train_data.test_idxs,
+        config.eval_batch_size, config.num_negative_edges_eval)
     trainer.fit(train_loader=dataloader, val_loader=val_dataloader,
                 test_loader=test_dataloader, n_epochs=config.n_epochs,
                 save_model_path=config.save_model_path,

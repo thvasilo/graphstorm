@@ -4,6 +4,7 @@ import torch as th
 from torch.nn.parallel import DistributedDataParallel
 
 from ..model.lp_gnn import GSgnnLinkPredictionModelInterface
+from ..model.lp_gnn import lp_mini_batch_predict
 from ..model.gnn import do_full_graph_inference, GSgnnModelBase, GSgnnModel
 from .gsgnn_trainer import GSgnnTrainer
 
@@ -118,7 +119,8 @@ class GSgnnLinkPredictionTrainer(GSgnnTrainer):
                 val_score = None
                 if self.evaluator is not None and \
                     self.evaluator.do_eval(total_steps, epoch_end=False):
-                    val_score = self.eval(model.module, data, total_steps,
+                    val_score = self.eval(model.module, data,
+                                          val_loader, test_loader, total_steps,
                                           edge_mask_for_gnn_embeddings)
 
                     if self.evaluator.do_early_stop(val_score):
@@ -144,7 +146,8 @@ class GSgnnLinkPredictionTrainer(GSgnnTrainer):
 
             val_score = None
             if self.evaluator is not None and self.evaluator.do_eval(total_steps, epoch_end=True):
-                val_score = self.eval(model.module, data, total_steps,
+                val_score = self.eval(model.module, data,
+                                      val_loader, test_loader, total_steps,
                                       edge_mask_for_gnn_embeddings)
 
                 if self.evaluator.do_early_stop(val_score):
@@ -174,7 +177,8 @@ class GSgnnLinkPredictionTrainer(GSgnnTrainer):
                 self.save_model_results_to_file(self.evaluator.best_test_score,
                                                 save_perf_results_path)
 
-    def eval(self, model, data, total_steps, edge_mask_for_gnn_embeddings):
+    def eval(self, model, data, val_loader, test_loader,
+        total_steps, edge_mask_for_gnn_embeddings):
         """ do the model evaluation using validiation and test sets
 
         Parameters
@@ -183,6 +187,10 @@ class GSgnnLinkPredictionTrainer(GSgnnTrainer):
             The GNN model.
         data : GSgnnEdgeTrainData
             The training dataset
+        val_loader: GSNodeDataLoader
+            The dataloader for validation data
+        test_loader : GSNodeDataLoader
+            The dataloader for test data.
         total_steps: int
             Total number of iterations.
         edge_mask_for_gnn_embeddings : str
@@ -198,8 +206,13 @@ class GSgnnLinkPredictionTrainer(GSgnnTrainer):
                                       edge_mask=edge_mask_for_gnn_embeddings,
                                       task_tracker=self.task_tracker)
         sys_tracker.check('compute embeddings')
-        decoder = model.decoder
-        val_score, test_score = self.evaluator.evaluate(emb, decoder, total_steps, model.device)
+        device = th.device(f"cuda:{self.dev_id}") \
+            if self.dev_id >= 0 else th.device("cpu")
+        val_scores = lp_mini_batch_predict(model, emb, val_loader, device) \
+            if val_loader is not None else None
+        test_scores = lp_mini_batch_predict(model, emb, test_loader, device)
+        val_score, test_score = self.evaluator.evaluate(
+            val_scores, test_scores, total_steps)
         sys_tracker.check('evaluate validation/test')
 
         if self.rank == 0:

@@ -258,6 +258,7 @@ class GSgnnEdgeTrainData(GSgnnEdgeData):
         test_idxs = {}
         num_train = num_val = num_test = 0
         pb = g.get_partition_book()
+        print(self.train_etypes)
         for canonical_etype in self.train_etypes:
             etype = canonical_etype[1]
             if 'train_mask' in g.edges[etype].data:

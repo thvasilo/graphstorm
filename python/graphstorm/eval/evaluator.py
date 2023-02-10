@@ -5,11 +5,11 @@ from statistics import mean
 import torch as th
 
 from .eval_func import ClassificationMetrics, RegressionMetrics, LinkPredictionMetrics
-from .utils import fullgraph_eval
 from .utils import broadcast_data
 from ..config.config import EARLY_STOP_AVERAGE_INCREASE_STRATEGY
 from ..config.config import EARLY_STOP_CONSECUTIVE_INCREASE_STRATEGY
 from ..utils import get_rank
+from .utils import calc_ranking, gen_mrr_score
 
 def early_stop_avg_increase_judge(val_score, val_perf_list, comparator):
     """
@@ -523,20 +523,20 @@ class GSgnnLPEvaluator():
         self.tracker = client
 
     @abc.abstractmethod
-    def evaluate(self, embeddings, decoder, total_iters, device):
+    def evaluate(self, val_scores, test_scores, total_iters):
         """
         GSgnnLinkPredictionModel.fit() will call this function to do user defined evalution.
 
         Parameters
         ----------
-        embeddings: dict of tensors
-            The node embeddings.
-        decoder: Decoder
-            Link prediction decoder.
+        val_scores: dict of (list, list)
+            The positive and negative scores of validation edges
+            for each edge type
+        test_scores: dict of (list, list)
+            The positive and negative scores of testing edges
+            for each edge type
         total_iters: int
             The current interation number.
-        device: th.device
-            Device to run the evaluation.
 
         Returns
         -----------
@@ -686,9 +686,8 @@ class GSgnnMrrLPEvaluator(GSgnnLPEvaluator):
     data: GSgnnEdgeData
         The processed dataset
     """
-    def __init__(self, g, config, data):
+    def __init__(self, config, data):
         super(GSgnnMrrLPEvaluator, self).__init__(config)
-        self.g = g
         self.train_idxs = data.train_idxs
         self.val_idxs = data.val_idxs
         self.test_idxs = data.test_idxs
@@ -707,136 +706,80 @@ class GSgnnMrrLPEvaluator(GSgnnLPEvaluator):
             self._best_test_score[metric] = self.metrics_obj.init_best_metric(metric=metric)
             self._best_iter[metric] = 0
 
-    def evaluate_on_train_set(self, embeddings, decoder, device):
-        """ Compute mrr score on training set
+    def compute_score(self, scores, train=False): # pylint:disable=unused-argument
+        """ Compute evaluation score
 
             Parameters
             ----------
-            embeddings: dict of tensors
-                The node embeddings.
-            decoder: Decoder
-                Link prediction decoder.
-            device: th.device
-                Device
+            scores: dict of tuples
+                Pos and negative scores in format of etype:(pos_score, neg_score)
+            train: bool
+                TODO: Reversed for future use cases when we want to use different
+                way to generate scores for train (more efficient but less accurate)
+                and test.
 
             Returns
             -------
-            train_mrr: float
+            Evaluation metric values: dict
         """
-        assert self.train_idxs is not None, \
-            "Must have train_idxs but get None. " \
-            "Please check whether the input data is TrainData"
-        train_mrr = self.evaluate_on_idx(embeddings, decoder, device,
-                                         self.train_idxs,
-                                         eval_type="Training")
-        return train_mrr
+        rankings = []
+        # We calculate global mrr, etype is ignored.
+        # User can develop its own per etype MRR evaluator
+        for _, score_lists in scores.items():
+            for (pos_score, neg_score) in score_lists:
+                rankings.append(calc_ranking(pos_score, neg_score))
 
-    def _fullgraph_eval(self, g, embeddings, relation_embs, device,
-        target_etype, val_idx):
-        """ Wraper for fullgraph_eval
+        rankings = th.cat(rankings, dim=0)
+        metrics = gen_mrr_score(rankings)
 
-            Note: we wrap it so we can do mock test
-        """
-        return fullgraph_eval(g,
-                            embeddings,
-                            relation_embs,
-                            device,
-                            target_etype, val_idx,
-                            num_negative_edges_eval=self.num_negative_edges_eval,
-                            task_tracker=self.tracker)
+        # When world size == 1, we do not need the barrier
+        if th.distributed.get_world_size() > 1:
+            th.distributed.barrier()
+        for _, metric_val in metrics.items():
+            th.distributed.all_reduce(metric_val)
+        return_metrics = {}
+        for metric, metric_val in metrics.items():
+            return_metric = \
+                metric_val / th.distributed.get_world_size()
+            return_metrics[metric] = return_metric.item()
+        return return_metrics
 
-    def evaluate_on_idx(self, embeddings, decoder, device, val_idxs, eval_type=""):
-        """ Compute mrr score on eval or test set
-
-            Parameters
-            ----------
-            embeddings: dict of tensors
-                The node embeddings.
-            decoder: Decoder
-                Link prediction decoder.
-            device: th.device
-                Device
-            val_idxs: dict of th.Tensor
-                Evaluation edge idxs
-            eval_type: str
-                Used in print: Validation or Testing.
-
-            Returns
-            -------
-            Mrr score
-        """
-        g = self.g
-        # evaluation idxs is empty.
-        # Nothing to do.
-        if val_idxs is None or len(val_idxs) == 0:
-            return {"mrr": -1}
-
-        val_mrrs = {}
-        for target_etype, val_idx in val_idxs.items():
-            relation_embs = None if self.use_dot_product else decoder.get_relemb(target_etype)
-            val_metrics = self._fullgraph_eval(g,
-                                               embeddings,
-                                               relation_embs,
-                                               device,
-                                               target_etype,
-                                               val_idx)
-            # TODO(xiangsx): change evaluation metric names into lower case
-            val_mrr = val_metrics['MRR'] # fullgraph_eval use 'MRR' as keyword
-            val_mrrs[target_etype] = val_mrr
-        th.distributed.barrier()
-        if get_rank() == 0:
-            print(f"{eval_type} metrics: {val_metrics}")
-            print(f"{eval_type} mrr: {val_mrrs}")
-        val_mrrs_all = []
-        # Average mrr across edges under different target etypes
-        for _, mrr_val in val_mrrs.items():
-            val_mrrs_all.append(mrr_val)
-        val_mrr = sum(val_mrrs_all) / len(val_mrrs_all)
-
-        # TODO add more metrics here
-        return {"mrr": val_mrr}
-
-    def evaluate(self, embeddings, decoder, total_iters, device):
+    def evaluate(self, val_scores, test_scores, total_iters):
         """ GSgnnLinkPredictionModel.fit() will call this function to do user defined evalution.
 
-            Parameters
-            ----------
-            embeddings: dict of tensors
-                The node embeddings.
-            decoder: Decoder
-                Link prediction decoder.
-            total_iters: int
-                The current interation number.
-            device: th.device
-                Device to run the evaluation.
+        Parameters
+        ----------
+        val_scores: dict of (list, list)
+            The positive and negative scores of validation edges
+            for each edge type
+        test_scores: dict of (list, list)
+            The positive and negative scores of testing edges
+            for each edge type
+        total_iters: int
+            The current interation number.
 
-            Returns
-            -----------
-            val_mrr: float
-                Validation mrr
-            test_mrr: float
-                Test mrr
+        Returns
+        -----------
+        val_mrr: float
+            Validation mrr
+        test_mrr: float
+            Test mrr
         """
-        test_score = self.evaluate_on_idx(
-            embeddings, decoder, device, self.test_idxs,  eval_type="Testing")
+        with th.no_grad():
+            test_score = self.compute_score(test_scores)
 
-        # If val_idxs is None, (It is inference only task)
-        # we do not need to calculate validation score.
-        # Furthermore, we do not need to record the best val_score and iter.
-        if self.val_idxs is not None:
-            val_score = self.evaluate_on_idx(
-                embeddings, decoder, device, self.val_idxs, eval_type="Validation")
-            # Wait for all trainers to finish their work.
+            if val_scores is not None:
+                val_score = self.compute_score(val_scores)
 
-            if get_rank() == 0:
-                for metric in self.metric:
-                    # be careful whether > or < it might change per metric.
-                    if self.metrics_obj.metric_comparator[metric](
-                        self._best_val_score[metric], val_score[metric]):
-                        self._best_val_score[metric] = val_score[metric]
-                        self._best_test_score[metric] = test_score[metric]
-                        self._best_iter[metric] = total_iters
-        else:
-            val_score = {"mrr": -1} # Dummy
+                if get_rank() == 0:
+                    for metric in self.metric:
+                        # be careful whether > or < it might change per metric.
+                        if self.metrics_obj.metric_comparator[metric](
+                            self._best_val_score[metric], val_score[metric]):
+                            self._best_val_score[metric] = val_score[metric]
+                            self._best_test_score[metric] = test_score[metric]
+                            self._best_iter[metric] = total_iters
+            else:
+                val_score = {"mrr": -1} # Dummy
 
         return val_score, test_score

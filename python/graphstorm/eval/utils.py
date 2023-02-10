@@ -1,10 +1,8 @@
 """utility functions for evaluation
 """
-import time
 import torch as th
 
 from ..data.utils import alltoallv_nccl, alltoallv_cpu
-from ..utils import get_rank
 
 def calc_distmult_pos_score(h_emb, t_emb, r_emb, device=None):
     """ Calculate DistMulti Score for positive pairs
@@ -239,197 +237,35 @@ def gen_lp_score(ranking):
     logs = []
     for rank in ranking:
         logs.append({
-            'MRR': 1.0 / rank,
-            'MR': float(rank),
-            'HITS@1': 1.0 if rank <= 1 else 0.0,
-            'HITS@3': 1.0 if rank <= 3 else 0.0,
-            'HITS@10': 1.0 if rank <= 10 else 0.0
+            'mrr': 1.0 / rank,
+            'mr': float(rank),
+            'hits@1': 1.0 if rank <= 1 else 0.0,
+            'hits@3': 1.0 if rank <= 3 else 0.0,
+            'hits@10': 1.0 if rank <= 10 else 0.0
         })
-    return logs
+    metrics = {}
+    for metric in logs[0]:
+        metrics[metric] = th.tensor(sum(log[metric] for log in logs) / len(logs))
+    return metrics
 
-# pylint: disable=invalid-name
-def fullgraph_eval(g, embs, relation_embs, device, target_etype, pos_eids,
-                   num_negative_edges_eval=-1, task_tracker=None):
-    """ The evaluation is done in a minibatch fasion.
-        Firstly, we use fullgraph_emb to generate the node embeddings for all the nodes
-        in g. And then evaluate each positive edge with all possible negative edges.
-        Negative edges are constructed as: given a positive edge and a selected (randomly or
-        sequentially) edge, we substitute the head node in the positive edge with the head node
-        in the selected edge to construct one negative edge and substitute the tail node in the
-        positive edge with the taisl node in the selected edge to construct another negative edge.
+def gen_mrr_score(ranking):
+    """ Get link prediction mrr metrics
 
         Parameters
         ----------
-        g: DGLGraph
-            Validation graph or testing graph
-        embs: th.Tensor
-            The embedding
-        relation_embs: th.Tensor
-            Relation embedding
-        device: th device
-            The device to run evaluation
-        target_etype: str or tuple of str
-            Edge type to do evaluation
-        pos_eids: th.Tensor
-            Positive edge ids
-        num_negative_edges_eval: int
-            Number of negative edges for each positive edge. if -1, use all edges.
-            Default: -1
-        task_tracker: GSTaskTrackerAbc
-            task tracker
+        ranking:
+            ranking of each positive edge
+
+        Returns
+        -------
+        link prediction eval metrics: list of dict
     """
-    metrics = {}
-    with th.no_grad():
-        srctype, etype_name, dsttype =g.to_canonical_etype(etype=target_etype)
+    logs = []
+    for rank in ranking:
+        logs.append(1.0 / rank)
+    metrics = {"mrr": th.tensor(sum(log for log in logs) / len(logs))}
+    return metrics
 
-        # calculate mmr for the target etype
-        logs = []
-        t0 = time.time()
-        pos_batch_size = 1024
-        pos_cnt = pos_eids.shape[0]
-        # we find the head and tail for the positive edge ids (used in testing)
-        u, v = g.find_edges(pos_eids,etype=etype_name)
-        # randomly select num_negative_edges_eval edges and
-        # corrupt them int neg heads and neg tails
-        if num_negative_edges_eval > 0:
-            rand_n_u = th.randint(g.num_nodes(srctype),
-                (num_negative_edges_eval * ((pos_cnt // pos_batch_size) + 1),))
-            rand_n_v = th.randint(g.num_nodes(dsttype),
-                (num_negative_edges_eval * ((pos_cnt // pos_batch_size) + 1),))
-        # treat all nodes in head or tail as neg nodes
-        else:
-            n_u = th.arange(g.num_nodes(srctype))
-            n_v = th.arange(g.num_nodes(dsttype))
-
-
-        # batch based evaluation to fit in GPU
-        return_metric_per_trainer = {
-            'MRR': 0,
-            'MR': 0,
-            'HITS@1': 0,
-            'HITS@3': 0,
-            'HITS@10': 0
-        }
-
-        for p_i in range(int((pos_cnt + pos_batch_size - 1) // pos_batch_size)):
-            if task_tracker is not None:
-                task_tracker.keep_alive(p_i)
-
-            left_batch_end = p_i * pos_batch_size
-            right_batch_end = (p_i + 1) * pos_batch_size \
-                if (p_i + 1) * pos_batch_size < pos_cnt else pos_cnt
-
-            s_pu = u[left_batch_end: right_batch_end]
-            s_pv = v[left_batch_end: right_batch_end]
-
-            phead_emb = embs[srctype][s_pu].to(device)
-            ptail_emb = embs[dsttype][s_pv].to(device)
-            # calculate the positive batch score
-            pos_score = calc_dot_pos_score(phead_emb, ptail_emb).cpu() \
-                            if relation_embs is None else \
-                                calc_distmult_pos_score(
-                                    phead_emb, ptail_emb, relation_embs, device).cpu()
-            if num_negative_edges_eval > 0:
-                n_u = rand_n_u[p_i * num_negative_edges_eval:(p_i + 1) * num_negative_edges_eval]
-                n_v = rand_n_v[p_i * num_negative_edges_eval:(p_i + 1) * num_negative_edges_eval]
-                n_u, _ = th.sort(n_u)
-                n_v, _ = th.sort(n_v)
-
-            neg_batch_size = 10000
-            head_num_negative_edges_eval = n_u.shape[0]
-            tail_num_negative_edges_eval = n_v.shape[0]
-            t_neg_score = []
-            h_neg_score = []
-            # we calculate and collect the negative scores for the perturbed
-            # tail and haid nodes in batch form head node scores
-            for n_i in range(int((head_num_negative_edges_eval + neg_batch_size - 1) \
-                // neg_batch_size)):
-                sn_u = n_u[n_i * neg_batch_size : \
-                        (n_i + 1) * neg_batch_size \
-                        if (n_i + 1) * neg_batch_size < head_num_negative_edges_eval
-                        else head_num_negative_edges_eval]
-                nhead_emb = embs[srctype][sn_u].to(device)
-                if relation_embs is None:
-                    h_neg_score.append(
-                        calc_dot_neg_head_score(nhead_emb,
-                                                ptail_emb,
-                                                1,
-                                                ptail_emb.shape[0],
-                                                nhead_emb.shape[0],
-                                                device).reshape(-1, nhead_emb.shape[0]).cpu())
-                else:
-                    h_neg_score.append(
-                        calc_distmult_neg_head_score(nhead_emb,
-                                                     ptail_emb,
-                                                     relation_embs,
-                                                     1,
-                                                     ptail_emb.shape[0],
-                                                     nhead_emb.shape[0],
-                                                     device).reshape(-1, nhead_emb.shape[0]).cpu())
-
-            # tail node scores
-            for n_i in range(int((tail_num_negative_edges_eval + neg_batch_size - 1) \
-                // neg_batch_size)):
-                sn_v = n_v[n_i * neg_batch_size : \
-                        (n_i + 1) * neg_batch_size \
-                        if (n_i + 1) * neg_batch_size < tail_num_negative_edges_eval \
-                        else tail_num_negative_edges_eval]
-                ntail_emb = embs[dsttype][sn_v].to(device)
-                if relation_embs is None:
-                    t_neg_score.append(
-                        calc_dot_neg_tail_score(phead_emb,
-                                                ntail_emb,
-                                                1,
-                                                phead_emb.shape[0],
-                                                ntail_emb.shape[0],
-                                                device).reshape(-1, ntail_emb.shape[0]).cpu())
-                else:
-                    t_neg_score.append(
-                        calc_distmult_neg_tail_score(phead_emb,
-                                                     ntail_emb,
-                                                     relation_embs,
-                                                     1,
-                                                     phead_emb.shape[0],
-                                                     ntail_emb.shape[0],
-                                                     device).reshape(-1, ntail_emb.shape[0]).cpu())
-
-            # the following piece of code filters the false negative edges from the scores
-            t_neg_score = th.cat(t_neg_score, dim=1)
-            h_neg_score = th.cat(h_neg_score, dim=1)
-
-            # the following pieces of code calculate the mrr for the perturbed head and tail nodes
-            h_ranking = calc_ranking(pos_score, h_neg_score)
-            # perturb subject
-            t_ranking = calc_ranking(pos_score, t_neg_score)
-
-            # print((left_batch_end, right_batch_end), eids.shape, h_ranking.shape)
-            h_logs = gen_lp_score(h_ranking.float())
-            t_logs = gen_lp_score(t_ranking.float())
-            logs = h_logs + t_logs
-            metrics = {}
-            for metric in logs[0]:
-                metrics[metric] = sum(log[metric] for log in logs) / len(logs)
-                return_metric_per_trainer[metric] += metrics[metric]
-        for metric in return_metric_per_trainer:
-            return_metric_per_trainer[metric] = \
-                th.tensor(return_metric_per_trainer[metric] / \
-                    int((pos_cnt + pos_batch_size - 1) // pos_batch_size)).to(device)
-        t1 = time.time()
-
-        # When world size == 1, we do not need the barrier
-        if th.distributed.get_world_size() > 1:
-            th.distributed.barrier()
-        for _, metric_val in return_metric_per_trainer.items():
-            th.distributed.all_reduce(metric_val)
-        return_metric = {}
-        for metric, metric_val in return_metric_per_trainer.items():
-            return_metric_i = \
-                metric_val / th.distributed.get_world_size()
-            return_metric[metric] = return_metric_i.item()
-        if get_rank() == 0:
-            print(f"Full eval {pos_eids.shape[0]} exmpales takes {t1 - t0} seconds")
-
-    return return_metric
 
 def broadcast_data(rank, world_size, data_tensor):
     """ Broadcast local data to all trainers in the cluster using all2all

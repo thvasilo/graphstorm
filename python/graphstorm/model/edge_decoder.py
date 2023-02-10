@@ -5,7 +5,10 @@ import torch as th
 from torch import nn
 
 from .gs_layer import GSLayer, GSLayerNoParam
+from ..dataloading import BUILTIN_LP_UNIFORM_NEG_SAMPLER
+from ..dataloading import BUILTIN_LP_JOINT_NEG_SAMPLER
 from ..eval.utils import calc_distmult_pos_score, calc_dot_pos_score
+from ..eval.utils import calc_distmult_neg_head_score, calc_distmult_neg_tail_score
 
 # TODO(zhengda) we need to split it into classifier and regression.
 class DenseBiDecoder(GSLayer):
@@ -286,6 +289,107 @@ class LinkPredictDotDecoder(GSLayerNoParam):
             scores=th.cat(scores)
             return scores
 
+    def calc_test_scores(self, emb, pos_neg_tuple, neg_sample_type, device):
+        """ Compute scores for positive edges and negative edges
+
+        Parameters
+        ----------
+        emb: dict of Tensor
+            Node embeddings.
+        pos_neg_tuple: dict of tuple
+            Positive and negative edges stored in a tuple:
+            tuple(positive source, negative source,
+            postive destination, negatve destination).
+            The positive edges: (positive source, positive desitnation)
+            The negative edges: (positive source, negative desitnation) and
+                                (negative source, positive desitnation)
+        neg_sample_type: str
+            Describe how negative samples are sampled.
+                Uniform: For each positive edge, we sample K negative edges
+                Joint: For one batch of positive edges, we sample
+                       K negative edges
+        device: th.device
+            Device used to compute scores
+
+        Return
+        ------
+        Dict of (Tensor, Tensor)
+            Return a dictionary of edge type to
+            (positive scores, negative scores)
+        """
+        assert isinstance(pos_neg_tuple, dict) and len(pos_neg_tuple) == 1, \
+            "DotDecoder is only applicable to link prediction task with " \
+            "single target training edge type"
+        canonical_etype = list(pos_neg_tuple.keys())[0]
+        pos_src, neg_src, pos_dst, neg_dst = pos_neg_tuple[canonical_etype]
+        utype, _, vtype = canonical_etype
+        pos_src_emb = emb[utype][pos_src].to(device)
+        pos_dst_emb = emb[vtype][pos_dst].to(device)
+
+        scores = {}
+        pos_scores = calc_dot_pos_score(pos_src_emb, pos_dst_emb)
+        neg_scores = []
+        if neg_src is not None:
+            neg_src_emb = emb[utype][neg_src.reshape(-1,)].to(device)
+            if neg_sample_type == BUILTIN_LP_UNIFORM_NEG_SAMPLER:
+                neg_src_emb = neg_src_emb.reshape(
+                    neg_src.shape[0], neg_src.shape[1], -1)
+                pos_dst_emb = pos_dst_emb.reshape(
+                    pos_dst_emb.shape[0], 1, pos_dst_emb.shape[1])
+                neg_score = calc_dot_pos_score(neg_src_emb, pos_dst_emb)
+            elif neg_sample_type == BUILTIN_LP_JOINT_NEG_SAMPLER:
+                # joint sampled negative samples
+                assert len(pos_dst_emb.shape) == 2, \
+                    "For joint negative sampler, in evaluation" \
+                    "positive src/dst embs should in shape of" \
+                    "[eval_batch_size, dimension size]"
+                assert len(neg_src_emb.shape) == 2, \
+                    "For joint negative sampler, in evaluation" \
+                    "negative src/dst embs should in shape of " \
+                    "[number_of_negs, dimension size]"
+                neg_src_emb = neg_src_emb.reshape(1, neg_src.shape[0], -1)
+                pos_dst_emb = pos_dst_emb.reshape(
+                    pos_dst_emb.shape[0], 1, pos_dst_emb.shape[1])
+                neg_score = calc_dot_pos_score(neg_src_emb, pos_dst_emb)
+            else:
+                assert False, f"Unknow negative sample type {neg_sample_type}"
+            assert len(neg_score.shape) == 2
+            neg_scores.append(neg_score)
+
+        if neg_dst is not None:
+            if neg_sample_type == BUILTIN_LP_UNIFORM_NEG_SAMPLER:
+                neg_dst_emb = emb[vtype][neg_dst.reshape(-1,)].to(device)
+                neg_dst_emb = neg_dst_emb.reshape(
+                    neg_dst.shape[0], neg_dst.shape[1], -1)
+                # uniform sampled negative samples
+                pos_src_emb = pos_src_emb.reshape(
+                    pos_src_emb.shape[0], 1, pos_src_emb.shape[1])
+                neg_score = calc_dot_pos_score(pos_src_emb, neg_dst_emb)
+            elif neg_sample_type == BUILTIN_LP_JOINT_NEG_SAMPLER:
+                neg_dst_emb = emb[vtype][neg_dst].to(device)
+                # joint sampled negative samples
+                assert len(pos_src_emb.shape) == 2, \
+                    "For joint negative sampler, in evaluation " \
+                    "positive src/dst embs should in shape of" \
+                    "[eval_batch_size, dimension size]"
+                assert len(neg_dst_emb.shape) == 2, \
+                    "For joint negative sampler, in evaluation" \
+                    "negative src/dst embs should in shape of " \
+                    "[number_of_negs, dimension size]"
+                pos_src_emb = pos_src_emb.reshape(
+                    pos_src_emb.shape[0], 1, pos_src_emb.shape[1])
+                neg_dst_emb = neg_dst_emb.reshape(1, neg_dst.shape[0], -1)
+                neg_score = calc_dot_pos_score(pos_src_emb, neg_dst_emb)
+            else:
+                assert False, f"Unknow negative sample type {neg_sample_type}"
+            assert len(neg_score.shape) == 2
+            neg_scores.append(neg_score)
+
+        neg_scores = th.cat(neg_scores, dim=-1).detach().cpu()
+        pos_scores = pos_scores.detach().cpu()
+        scores[canonical_etype] = (pos_scores, neg_scores)
+        return scores
+
     @property
     def in_dims(self):
         """ The number of input dimensions.
@@ -386,6 +490,120 @@ class LinkPredictDistMultDecoder(GSLayer):
                 scores.append(scores_etype)
             scores=th.cat(scores)
             return scores
+
+    def calc_test_scores(self, emb, pos_neg_tuple, neg_sample_type, device):
+        """ Compute scores for positive edges and negative edges
+
+        Parameters
+        ----------
+        emb: dict of Tensor
+            Node embeddings.
+        pos_neg_tuple: dict of tuple
+            Positive and negative edges stored in a tuple:
+            tuple(positive source, negative source,
+            postive destination, negatve destination).
+            The positive edges: (positive source, positive desitnation)
+            The negative edges: (positive source, negative desitnation) and
+                                (negative source, positive desitnation)
+        neg_sample_type: str
+            Describe how negative samples are sampled.
+                Uniform: For each positive edge, we sample K negative edges
+                Joint: For one batch of positive edges, we sample
+                       K negative edges
+        device: th.device
+            Device used to compute scores
+
+        Return
+        ------
+        Dict of (Tensor, Tensor)
+            Return a dictionary of edge type to
+            (positive scores, negative scores)
+        """
+        assert isinstance(pos_neg_tuple, dict), \
+            "DistMulti is only applicable to heterogeneous graphs." \
+            "Otherwise please use dot product decoder"
+        scores = {}
+        for canonical_etype, (pos_src, neg_src, pos_dst, neg_dst) in pos_neg_tuple.items():
+            utype, _, vtype = canonical_etype
+            # pos score
+            pos_src_emb = emb[utype][pos_src]
+            pos_dst_emb = emb[vtype][pos_dst]
+            rid = self.etype2rid[canonical_etype]
+            rel_embedding = self._w_relation(
+                th.tensor(rid).to(self._w_relation.weight.device))
+            pos_scores = calc_distmult_pos_score(
+                pos_src_emb, pos_dst_emb, rel_embedding, device)
+            neg_scores = []
+
+            if neg_src is not None:
+                neg_src_emb = emb[utype][neg_src.reshape(-1,)]
+                if neg_sample_type == BUILTIN_LP_UNIFORM_NEG_SAMPLER:
+                    neg_src_emb = neg_src_emb.reshape(neg_src.shape[0], neg_src.shape[1], -1)
+                    # uniform sampled negative samples
+                    pos_dst_emb = pos_dst_emb.reshape(
+                        pos_dst_emb.shape[0], 1, pos_dst_emb.shape[1])
+                    rel_embedding = rel_embedding.reshape(
+                        1, 1, rel_embedding.shape[-1])
+                    neg_score = calc_distmult_pos_score(
+                        neg_src_emb, rel_embedding, pos_dst_emb, device)
+                elif neg_sample_type == BUILTIN_LP_JOINT_NEG_SAMPLER:
+                    # joint sampled negative samples
+                    assert len(pos_dst_emb.shape) == 2, \
+                        "For joint negative sampler, in evaluation" \
+                        "positive src/dst embs should in shape of" \
+                        "[eval_batch_size, dimension size]"
+                    assert len(neg_src_emb.shape) == 2, \
+                        "For joint negative sampler, in evaluation" \
+                        "negative src/dst embs should in shape of " \
+                        "[number_of_negs, dimension size]"
+                    neg_score = calc_distmult_neg_head_score(
+                        neg_src_emb, pos_dst_emb, rel_embedding,
+                        1, pos_dst_emb.shape[0], neg_src_emb.shape[0],
+                        device)
+                    # shape (batch_size, num_negs)
+                    neg_score = neg_score.reshape(-1, neg_src_emb.shape[0])
+                else:
+                    assert False, f"Unknow negative sample type {neg_sample_type}"
+                assert len(neg_score.shape) == 2
+                neg_scores.append(neg_score)
+
+            if neg_dst is not None:
+                if neg_sample_type == BUILTIN_LP_UNIFORM_NEG_SAMPLER:
+                    neg_dst_emb = emb[vtype][neg_dst.reshape(-1,)]
+                    neg_dst_emb = neg_dst_emb.reshape(neg_dst.shape[0], neg_dst.shape[1], -1)
+                    # uniform sampled negative samples
+                    pos_src_emb = pos_src_emb.reshape(
+                        pos_src_emb.shape[0], 1, pos_src_emb.shape[1])
+                    rel_embedding = rel_embedding.reshape(
+                        1, 1, rel_embedding.shape[-1])
+                    neg_score = calc_distmult_pos_score(
+                        pos_src_emb, rel_embedding, neg_dst_emb, device)
+                elif neg_sample_type == BUILTIN_LP_JOINT_NEG_SAMPLER:
+                    neg_dst_emb = emb[vtype][neg_dst]
+                    # joint sampled negative samples
+                    assert len(pos_src_emb.shape) == 2, \
+                        "For joint negative sampler, in evaluation " \
+                        "positive src/dst embs should in shape of" \
+                        "[eval_batch_size, dimension size]"
+                    assert len(neg_dst_emb.shape) == 2, \
+                        "For joint negative sampler, in evaluation" \
+                        "negative src/dst embs should in shape of " \
+                        "[number_of_negs, dimension size]"
+                    neg_score = calc_distmult_neg_tail_score(
+                        pos_src_emb, neg_dst_emb, rel_embedding,
+                        1, pos_src_emb.shape[0], neg_dst_emb.shape[0],
+                        device)
+                    # shape (batch_size, num_negs)
+                    neg_score = neg_score.reshape(-1, neg_dst_emb.shape[0])
+                else:
+                    assert False, f"Unknow negative sample type {neg_sample_type}"
+                assert len(neg_score.shape) == 2
+                neg_scores.append(neg_score)
+            neg_scores = th.cat(neg_scores, dim=-1).detach().cpu()
+            pos_scores = pos_scores.detach().cpu()
+            scores[canonical_etype] = (pos_scores, neg_scores)
+
+        return scores
 
     @property
     def in_dims(self):
