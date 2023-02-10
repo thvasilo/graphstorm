@@ -32,6 +32,7 @@ from ..eval import SUPPORTED_REGRESSION_METRICS
 from ..eval import SUPPORTED_LINK_PREDICTION_METRICS
 
 from ..dataloading import BUILTIN_LP_UNIFORM_NEG_SAMPLER
+from ..dataloading import BUILTIN_LP_JOINT_NEG_SAMPLER
 
 __all__ = [
     "get_argument_parser",
@@ -908,6 +909,17 @@ class GSConfig:
         return BUILTIN_LP_UNIFORM_NEG_SAMPLER
 
     @property
+    def test_negative_sampler(self):
+        """ The algorithm of sampling negative edges for link prediction
+        """
+        # pylint: disable=no-member
+        if hasattr(self, "_test_negative_sampler"):
+            return self._test_negative_sampler
+
+        # use Joint neg for efficiency
+        return BUILTIN_LP_JOINT_NEG_SAMPLER
+
+    @property
     def num_negative_edges(self):
         """ Number of edges consider for the negative batch of edges
         """
@@ -1388,6 +1400,8 @@ def _add_link_prediction_args(parser):
                  "large variance increase this number.")
     group.add_argument("--negative-sampler", type=str, default=argparse.SUPPRESS,
             help="The algorithm of sampling negative edges for link prediction.")
+    group.add_argument("--test-negative-sampler", type=str, default=argparse.SUPPRESS,
+            help="The algorithm of sampling negative edges for link prediction testing")
     group.add_argument('--eval-etype', nargs='+', type=str, default=argparse.SUPPRESS)
     group.add_argument('--train-etype', nargs='+', type=str, default=argparse.SUPPRESS,
             help="The list of canonical etype that will be added as"

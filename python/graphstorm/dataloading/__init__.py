@@ -7,6 +7,8 @@ from .dataloading import GSgnnAllEtypeLPJointNegDataLoader
 from .dataloading import GSgnnAllEtypeLinkPredictionDataLoader
 from .dataloading import GSgnnEdgeDataLoader
 from .dataloading import GSgnnNodeDataLoader
+from .dataloading import GSgnnLinkPredictionTestDataLoader
+from .dataloading import GSgnnLinkPredictionJointTestDataLoader
 
 from .dataset import GSgnnEdgeTrainData
 from .dataset import GSgnnEdgeInferData

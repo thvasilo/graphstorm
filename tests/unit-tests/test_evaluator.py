@@ -1,10 +1,8 @@
-
-import importlib
-import unittest
 from unittest.mock import patch, MagicMock
 import operator
 
 import torch as th
+from numpy.testing import assert_equal, assert_almost_equal
 import dgl
 
 from graphstorm.eval import GSgnnMrrLPEvaluator
@@ -54,70 +52,72 @@ def test_mrr_lp_evaluator():
             "no_validation": False,
             "enable_early_stop": False,
         })
-    hg = gen_hg()
 
-    # test evaluate_on_idx
-    @patch('builtins.print')
-    @patch.object(GSgnnMrrLPEvaluator, '_fullgraph_eval')
-    def check_evaluate_on_idx(mock_fullgraph_eval, mock_print):
-        lp = GSgnnMrrLPEvaluator.__new__(GSgnnMrrLPEvaluator)
+    # test compute_score
+    val_pos_scores = th.rand((10,1))
+    val_neg_scores = th.rand((10,10))
+    val_scores = {
+        ("u", "r0", "v") : [(val_pos_scores, val_neg_scores / 2), (val_pos_scores, val_neg_scores / 2)],
+        ("u", "r1", "v") : [(val_pos_scores, val_neg_scores / 4)]
+    }
+    test_pos_scores = th.rand((10,1))
+    test_neg_scores = th.rand((10,10))
+    test_scores = {
+        ("u", "r0", "v") : [(test_pos_scores, test_neg_scores / 2), (test_pos_scores, test_neg_scores / 2)],
+        ("u", "r1", "v") : [(test_pos_scores, test_neg_scores / 4)]
+    }
 
-        # test lp.evaluate_on_idx
-        lp.g = hg
-        lp.num_negative_edges_eval = 10
-        lp.use_dot_product = True
-        lp.tracker = None
+    lp = GSgnnMrrLPEvaluator(config, train_data)
+    val_s = lp.compute_score(val_scores)
+    test_s = lp.compute_score(test_scores)
+    val_sc, test_sc = lp.evaluate(val_scores, test_scores, 0)
+    assert_equal(val_s['mrr'], val_sc['mrr'])
+    assert_equal(test_s['mrr'], test_sc['mrr'])
 
-        val_idxs = {
-            ("src", "rel_0", "dst"): th.tensor([1,2,3]),
-            ("src", "rel_1", "dst"): th.tensor([4,5,6]),
-            ("src", "rel_2", "dst"): th.tensor([2,4,6]),
-        }
+    rank = []
+    for i in range(len(val_pos_scores)):
+        val_pos = val_pos_scores[i]
+        val_neg0 = val_neg_scores[i] / 2
+        val_neg1 = val_neg_scores[i] / 4
+        scores = th.cat([val_pos, val_neg0])
+        _, indices = th.sort(scores, descending=True)
+        ranking = th.nonzero(indices == 0) + 1
+        rank.append(ranking.cpu().detach())
+        rank.append(ranking.cpu().detach())
+        scores = th.cat([val_pos, val_neg1])
+        _, indices = th.sort(scores, descending=True)
+        ranking = th.nonzero(indices == 0) + 1
+        rank.append(ranking.cpu().detach())
+    rank = th.cat(rank, dim=0)
+    mrr = 1.0/rank
+    mrr = th.sum(mrr) / len(mrr)
+    assert_almost_equal(val_s['mrr'], mrr.numpy(), decimal=7)
 
-        mock_fullgraph_eval.side_effect = [
-            {"MRR": 0.7, "HIT@1": 0.5},
-            {"MRR": 0.6, "HIT@1": 0.45},
-            {"MRR": 0.8, "HIT@1": 0.9}]
-
-        lp.g.rank = MagicMock(return_value=0)
-        metric = lp.evaluate_on_idx(None, None, None, val_idxs, "Valid")
-        mock_fullgraph_eval.assert_called()
-        mock_print.assert_called()
-        assert "mrr" in metric
-        assert metric["mrr"] == sum([0.7,0.6,0.8])/3
-
-        mock_fullgraph_eval.reset_mock()
-        mock_fullgraph_eval.side_effect = [
-            {"MRR": 0.7, "HIT@1": 0.5},
-            {"MRR": 0.6, "HIT@1": 0.45},
-            {"MRR": 0.65, "HIT@1": 0.9}]
-        mock_print.reset_mock()
-        lp.g.rank = MagicMock(return_value=1)
-        metric = lp.evaluate_on_idx(None, None, None, val_idxs, "Valid")
-        mock_fullgraph_eval.assert_called()
-        assert "mrr" in metric
-        assert metric["mrr"] == sum([0.7,0.6,0.65])/3
-
-        # check empty input
-        val_idxs = {}
-        metric = lp.evaluate_on_idx(None, None, None, val_idxs, "Valid")
-        assert "mrr" in metric
-        assert metric["mrr"] == -1
-
-        val_idxs = None
-        metric = lp.evaluate_on_idx(None, None, None, val_idxs, "Valid")
-        assert "mrr" in metric
-        assert metric["mrr"] == -1
-
-    check_evaluate_on_idx()
+    rank = []
+    for i in range(len(test_pos_scores)):
+        val_pos = test_pos_scores[i]
+        val_neg0 = test_neg_scores[i] / 2
+        val_neg1 = test_neg_scores[i] / 4
+        scores = th.cat([val_pos, val_neg0])
+        _, indices = th.sort(scores, descending=True)
+        ranking = th.nonzero(indices == 0) + 1
+        rank.append(ranking.cpu().detach())
+        rank.append(ranking.cpu().detach())
+        scores = th.cat([val_pos, val_neg1])
+        _, indices = th.sort(scores, descending=True)
+        ranking = th.nonzero(indices == 0) + 1
+        rank.append(ranking.cpu().detach())
+    rank = th.cat(rank, dim=0)
+    mrr = 1.0/rank
+    mrr = th.sum(mrr) / len(mrr)
+    assert_almost_equal(test_s['mrr'], mrr.numpy(), decimal=7)
 
     # test evaluate
-    @patch.object(GSgnnMrrLPEvaluator, 'evaluate_on_idx')
-    def check_evaluate(mock_evaluate_on_idx):
-        lp = GSgnnMrrLPEvaluator(hg, config, train_data)
-        lp.g.rank = MagicMock(return_value=0)
+    @patch.object(GSgnnMrrLPEvaluator, 'compute_score')
+    def check_evaluate(mock_compute_score):
+        lp = GSgnnMrrLPEvaluator(config, train_data)
 
-        mock_evaluate_on_idx.side_effect = [
+        mock_compute_score.side_effect = [
             {"mrr": 0.6},
             {"mrr": 0.7},
             {"mrr": 0.65},
@@ -126,13 +126,16 @@ def test_mrr_lp_evaluator():
             {"mrr": 0.7}
         ]
 
-        val_score, test_score = lp.evaluate(None, None, 100, None)
+        val_score, test_score = lp.evaluate(
+            {("u", "b", "v") : ()}, {("u", "b", "v") : ()}, 100)
         assert val_score["mrr"] == 0.7
         assert test_score["mrr"] == 0.6
-        val_score, test_score = lp.evaluate(None, None, 200, None)
+        val_score, test_score = lp.evaluate(
+            {("u", "b", "v") : ()}, {("u", "b", "v") : ()}, 200)
         assert val_score["mrr"] == 0.8
         assert test_score["mrr"] == 0.65
-        val_score, test_score = lp.evaluate(None, None, 300, None)
+        val_score, test_score = lp.evaluate(
+            {("u", "b", "v") : ()}, {("u", "b", "v") : ()}, 300)
         assert val_score["mrr"] == 0.7
         assert test_score["mrr"] == 0.8
 
@@ -151,20 +154,19 @@ def test_mrr_lp_evaluator():
             "do_validation": True
         })
     # test evaluate
-    @patch.object(GSgnnMrrLPEvaluator, 'evaluate_on_idx')
-    def check_evaluate_infer(mock_evaluate_on_idx):
-        lp = GSgnnMrrLPEvaluator(hg, config, train_data)
-        lp.g.rank = MagicMock(return_value=0)
+    @patch.object(GSgnnMrrLPEvaluator, 'compute_score')
+    def check_evaluate_infer(mock_compute_score):
+        lp = GSgnnMrrLPEvaluator(config, train_data)
 
-        mock_evaluate_on_idx.side_effect = [
+        mock_compute_score.side_effect = [
             {"mrr": 0.6},
             {"mrr": 0.7},
         ]
 
-        val_score, test_score = lp.evaluate(None, None, 100, None)
+        val_score, test_score = lp.evaluate(None, None, 100)
         assert val_score["mrr"] == -1
         assert test_score["mrr"] == 0.6
-        val_score, test_score = lp.evaluate(None, None, 200, None)
+        val_score, test_score = lp.evaluate(None, None, 200)
         assert val_score["mrr"] == -1
         assert test_score["mrr"] == 0.7
 
@@ -178,7 +180,7 @@ def test_mrr_lp_evaluator():
     # check GSgnnMrrLPEvaluator.do_eval()
     # train_data.do_validation True
     # config.no_validation False
-    lp = GSgnnMrrLPEvaluator(hg, config, train_data)
+    lp = GSgnnMrrLPEvaluator(config, train_data)
     assert lp.do_eval(120, epoch_end=True) is True
     assert lp.do_eval(200) is True
     assert lp.do_eval(0) is True
@@ -195,7 +197,7 @@ def test_mrr_lp_evaluator():
     # train_data.do_validation True
     # config.no_validation False
     # evaluation_frequency is 0
-    lp = GSgnnMrrLPEvaluator(hg, config3, train_data)
+    lp = GSgnnMrrLPEvaluator(config3, train_data)
     assert lp.do_eval(120, epoch_end=True) is True
     assert lp.do_eval(200) is False
 
@@ -209,10 +211,6 @@ def test_acc_evaluator():
                                       init_method=dist_init_method,
                                       world_size=1,
                                       rank=0)
-    # common Dummy objects
-    train_data = Dummy({
-            "do_validation": True
-        })
 
     config = Dummy({
             "multilabel": False,
@@ -221,7 +219,6 @@ def test_acc_evaluator():
             "eval_metric": ["accuracy"],
             "enable_early_stop": False,
         })
-    hg = gen_hg()
 
     # Test evaluate
     @patch.object(GSgnnAccEvaluator, 'compute_score')
@@ -289,10 +286,6 @@ def test_regression_evaluator():
                                       init_method=dist_init_method,
                                       world_size=1,
                                       rank=0)
-    # common Dummy objects
-    train_data = Dummy({
-            "do_validation": True
-        })
 
     config = Dummy({
             "evaluation_frequency": 100,
@@ -300,7 +293,6 @@ def test_regression_evaluator():
             "eval_metric": ["rmse"],
             "enable_early_stop": False,
         })
-    hg = gen_hg()
 
     # Test evaluate
     @patch.object(GSgnnRegressionEvaluator, 'compute_score')
@@ -392,10 +384,6 @@ def test_early_stop_cons_increase_judge():
 
 def test_early_stop_evaluator():
     # common Dummy objects
-    train_data = Dummy({
-            "do_validation": True
-        })
-
     config = Dummy({
             "evaluation_frequency": 100,
             "no_validation": False,
@@ -475,8 +463,7 @@ def test_early_stop_lp_evaluator():
             "no_validation": False,
             "enable_early_stop": False,
         })
-    hg = gen_hg()
-    evaluator = GSgnnMrrLPEvaluator(hg, config, train_data)
+    evaluator = GSgnnMrrLPEvaluator(config, train_data)
     for _ in range(10):
         # always return false
         assert evaluator.do_early_stop({"mrr": 0.5}) is False
@@ -491,7 +478,7 @@ def test_early_stop_lp_evaluator():
             "window_for_early_stop": 3,
             "early_stop_strategy": EARLY_STOP_CONSECUTIVE_INCREASE_STRATEGY,
         })
-    evaluator = GSgnnMrrLPEvaluator(hg, config, train_data)
+    evaluator = GSgnnMrrLPEvaluator(config, train_data)
     for _ in range(5):
         # always return false
         assert evaluator.do_early_stop({"mrr": 0.5}) is False
@@ -515,7 +502,7 @@ def test_early_stop_lp_evaluator():
             "window_for_early_stop": 3,
             "early_stop_strategy": EARLY_STOP_AVERAGE_INCREASE_STRATEGY,
         })
-    evaluator = GSgnnMrrLPEvaluator(hg, config, train_data)
+    evaluator = GSgnnMrrLPEvaluator(config, train_data)
     for _ in range(5):
         # always return false
         assert evaluator.do_early_stop({"accuracy": 0.5}) is False
@@ -567,7 +554,7 @@ def test_get_val_score_rank():
             "enable_early_stop": False,
         })
     hg = gen_hg()
-    
+
     evaluator = GSgnnRegressionEvaluator(config)
     # For mse, the smaller the better
     val_score = {"mse": 0.47}
@@ -591,7 +578,7 @@ def test_get_val_score_rank():
             "enable_early_stop": False,
         })
     hg = gen_hg()
-    
+
     evaluator = GSgnnRegressionEvaluator(config)
     # For rmse, the smaller the better
     val_score = {"rmse": 0.47}
@@ -609,7 +596,6 @@ def test_get_val_score_rank():
             "train_idxs": th.randint(10, (10,)),
             "val_idxs": th.randint(10, (10,)),
             "test_idxs": th.randint(10, (10,)),
-            "do_validation": True
         })
 
     config = Dummy({
@@ -620,9 +606,8 @@ def test_get_val_score_rank():
             "enable_early_stop": False,
             "eval_metric": ["mrr"]
         })
-    hg = gen_hg()
 
-    evaluator = GSgnnMrrLPEvaluator(hg, config, train_data)
+    evaluator = GSgnnMrrLPEvaluator(config, train_data)
     # For MRR, the bigger the better
     val_score = {"mrr": 0.47}
     assert evaluator.get_val_score_rank(val_score) == 1

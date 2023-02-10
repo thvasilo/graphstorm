@@ -7,8 +7,11 @@ from graphstorm.config import get_argument_parser
 from graphstorm.config import GSConfig
 from graphstorm.inference import GSgnnLinkPredictionInfer
 from graphstorm.eval import GSgnnMrrLPEvaluator
-from graphstorm.dataloading import GSgnnEdgeInferData, GSgnnEdgeDataLoader
-from graphstorm.dataloading import GSgnnLinkPredictionDataLoader
+from graphstorm.dataloading import GSgnnEdgeInferData
+from graphstorm.dataloading import GSgnnLinkPredictionTestDataLoader
+from graphstorm.dataloading import GSgnnLinkPredictionJointTestDataLoader
+from graphstorm.dataloading import BUILTIN_LP_UNIFORM_NEG_SAMPLER
+from graphstorm.dataloading import BUILTIN_LP_JOINT_NEG_SAMPLER
 
 def main(args):
     config = GSConfig(args)
@@ -24,18 +27,24 @@ def main(args):
     infer = GSgnnLinkPredictionInfer(model, gs.get_rank())
     infer.setup_cuda(dev_id=config.local_rank)
     if not config.no_validation:
-        infer.setup_evaluator(GSgnnMrrLPEvaluator(infer_data.g, config, infer_data))
+        infer.setup_evaluator(GSgnnMrrLPEvaluator(config, infer_data))
         assert len(infer_data.test_idxs) > 0, "There is not test data for evaluation."
     tracker = gs.create_builtin_task_tracker(config, infer.rank)
     infer.setup_task_tracker(tracker)
-    device = 'cuda:%d' % infer.dev_id
     # We only support full-graph inference for now.
-    fanout = []
-    dataloader = GSgnnLinkPredictionDataLoader(infer_data, infer_data.test_idxs, fanout=fanout,
+    if config.test_negative_sampler == BUILTIN_LP_UNIFORM_NEG_SAMPLER:
+        test_dataloader_cls = GSgnnLinkPredictionTestDataLoader
+    elif config.test_negative_sampler == BUILTIN_LP_JOINT_NEG_SAMPLER:
+        test_dataloader_cls = GSgnnLinkPredictionJointTestDataLoader
+    else:
+        raise Exception('Unknown test negative sampler.'
+            'Supported test negative samplers include '
+            f'[{BUILTIN_LP_UNIFORM_NEG_SAMPLER}, {BUILTIN_LP_JOINT_NEG_SAMPLER}]')
+
+    dataloader = test_dataloader_cls(infer_data, infer_data.test_idxs,
                                      batch_size=config.eval_batch_size,
-                                     num_negative_edges=config.num_negative_edges,
-                                     device=device, train_task=False)
-    infer.infer(dataloader, save_embed_path=config.save_embed_path)
+                                     num_negative_edges=config.num_negative_edges)
+    infer.infer(infer_data, dataloader, save_embed_path=config.save_embed_path)
 
 def generate_parser():
     parser = get_argument_parser()

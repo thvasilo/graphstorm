@@ -61,7 +61,9 @@ class GSgnnEdgePredictionInfer(GSInfer):
             target_ntypes.add(etype[0])
             target_ntypes.add(etype[2])
         embs = {ntype: embs[ntype] for ntype in target_ntypes}
-        save_gsgnn_embeddings(save_embed_path, embs, self.rank, th.distributed.get_world_size())
+        if save_embed_path is not None:
+            save_gsgnn_embeddings(save_embed_path, embs, self.rank,
+                th.distributed.get_world_size())
         th.distributed.barrier()
         sys_tracker.check('save embeddings')
 
