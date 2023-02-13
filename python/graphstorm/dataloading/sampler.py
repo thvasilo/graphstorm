@@ -95,7 +95,7 @@ class GlobalUniform(Uniform):
                 utype, _, vtype = canonical_etype
                 pos_neg_tuple[canonical_etype] = _gen_neg_pair(pos_pair, utype, vtype)
         else:
-            assert len(g.etypes) == 1, \
+            assert len(g.canonical_etypes) == 1, \
                 'please specify a dict of etypes and ids for graphs with multiple edge types'
             pos_neg_tuple = _gen_neg_pair(pos_pairs,
                 g.canonical_etypes[0][0], g.canonical_etypes[0][2])
@@ -145,7 +145,7 @@ class JointUniform(object):
             eids = {g.to_canonical_etype(k): v for k, v in eids.items()}
             neg_pair = {k: self._generate(g, v, k) for k, v in eids.items()}
         else:
-            assert len(g.etypes) == 1, \
+            assert len(g.canonical_etypes) == 1, \
                 'please specify a dict of etypes and ids for graphs with multiple edge types'
             neg_pair = self._generate(g, eids, g.canonical_etypes[0])
 
@@ -190,7 +190,7 @@ class JointUniform(object):
                 utype, _, vtype = canonical_etype
                 pos_neg_tuple[canonical_etype] = _gen_neg_pair(pos_pair, utype, vtype)
         else:
-            assert len(g.etypes) == 1, \
+            assert len(g.canonical_etypes) == 1, \
                 'please specify a dict of etypes and ids for graphs with multiple edge types'
             pos_neg_tuple = _gen_neg_pair(pos_pairs,
                 g.canonical_etypes[0][0], g.canonical_etypes[0][2])

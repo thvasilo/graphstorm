@@ -32,8 +32,8 @@ def test_moveliens100k_dataset_normal():
     assert dataset._g, f"Should have build a DGL graph!"
     assert len(dataset._g.ntypes) == 2, f"MovieLen100k should have 2 types of nodes, \
                                          but got {len(dataset._g.ntypes)}"
-    assert len(dataset._g.etypes) == 2, f"MovieLen100k should have 10 types of nodes, \
-                                         but got {len(dataset._g.etypes)}"
+    assert len(dataset._g.canonical_etypes) == 2, f"MovieLen100k should have 10 types of edges, \
+                                         but got {len(dataset._g.canonical_etypes)}"
     assert dataset._g.num_nodes('movie') == 1682, f"MovieLen100k should have 1682 \"movie\" nodes, \
                                                     but got {dataset._g.num_nodes('movie')}"
     assert dataset._g.num_nodes('user') == 943, f"MovieLen100k should have 943 \"user\" nodes, \
