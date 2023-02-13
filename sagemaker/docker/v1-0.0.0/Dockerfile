@@ -52,14 +52,14 @@ RUN cd /root; git clone --recursive https://github.com/dmlc/dgl.git
 
 
 # /opt/ml and all subdirectories are utilized by SageMaker, we use the /code subdirectory to store our user code.
-COPY graphstorm /opt/ml/code/graphstorm/
-COPY graphstorm/sagemaker/scripts/utils.py /opt/ml/code/
-COPY graphstorm/sagemaker/scripts/sagemaker_infer.py /opt/ml/code/
-COPY graphstorm/sagemaker/scripts/sagemaker_parmetis.py /opt/ml/code/
-COPY graphstorm/sagemaker/scripts/sagemaker_train.py /opt/ml/code/
+COPY code/graphstorm /opt/ml/code/graphstorm/
+COPY code/graphstorm/sagemaker/scripts/utils.py /opt/ml/code/
+COPY code/graphstorm/sagemaker/scripts/sagemaker_infer.py /opt/ml/code/
+COPY code/graphstorm/sagemaker/scripts/sagemaker_train.py /opt/ml/code/
+COPY code/graphstorm/sagemaker/scripts/sagemaker_parmetis.py /opt/ml/code/
 
 ENV PYTHONPATH="/opt/ml/code/graphstorm/python/:${PYTHONPATH}"
 
-WORKDIR /
+WORKDIR /opt/ml/code
 
 CMD ["/bin/bash"]
