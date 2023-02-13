@@ -169,7 +169,8 @@ class GSgnnLinkPredictionDataLoader():
         # from the test graph to generate embeddings for evaluating the model performance
         # on the test set.
         if edge_mask_for_gnn_embeddings is not None and \
-                any(edge_mask_for_gnn_embeddings in g.edges[etype].data for etype in g.etypes):
+                any(edge_mask_for_gnn_embeddings in g.edges[etype].data
+                    for etype in g.canonical_etypes):
             sampler = dgl.dataloading.MultiLayerNeighborSampler(fanout,
                                                                 mask=edge_mask_for_gnn_embeddings)
         else:
@@ -397,7 +398,8 @@ class GSgnnAllEtypeLinkPredictionDataLoader(GSgnnLinkPredictionDataLoader):
                             edge_mask_for_gnn_embeddings=None):
         # See the comment in GSgnnLinkPredictionDataLoader
         if edge_mask_for_gnn_embeddings is not None and \
-                any(edge_mask_for_gnn_embeddings in g.edges[etype].data for etype in g.etypes):
+                any(edge_mask_for_gnn_embeddings in g.edges[etype].data
+                    for etype in g.canonical_etypes):
             sampler = dgl.dataloading.MultiLayerNeighborSampler(fanout,
                                                                 mask=edge_mask_for_gnn_embeddings)
         else:

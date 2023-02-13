@@ -159,20 +159,20 @@ class RelationalGCNEncoder(GraphConvEncoder):
                  use_self_loop=True,
                  last_layer_act=False):
         super(RelationalGCNEncoder, self).__init__(h_dim, out_dim, num_hidden_layers)
-        if num_bases < 0 or num_bases > len(g.etypes):
-            self.num_bases = len(g.etypes)
+        if num_bases < 0 or num_bases > len(g.canonical_etypes):
+            self.num_bases = len(g.canonical_etypes)
         else:
             self.num_bases = num_bases
 
         # h2h
         for _ in range(num_hidden_layers):
             self.layers.append(RelGraphConvLayer(
-                h_dim, h_dim, g.etypes,
+                h_dim, h_dim, g.canonical_etypes,
                 self.num_bases, activation=F.relu, self_loop=use_self_loop,
                 dropout=dropout))
         # h2o
         self.layers.append(RelGraphConvLayer(
-            h_dim, out_dim, g.etypes,
+            h_dim, out_dim, g.canonical_etypes,
             self.num_bases, activation=F.relu if last_layer_act else None,
             self_loop=use_self_loop))
 
