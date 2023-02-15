@@ -38,11 +38,8 @@ Regression performance:
 In the opensource_gsf branch, the MAG link prediction performans much better than those in both M5GNN and the GSF main branch. The best test mrr culd reach to >0.90 while this value in the main branch is less than 0.4.
 
 #### GSF Open Source
-Train mrr: 0.9597, Val mrr: 0.9278, Test mrr: 0.8989, 
-Best val mrr: 0.9278, Best test mrr: 0.8989, Best iter: 3130
-
-Train mrr: 0.9697, Val mrr: 0.9443, Test mrr: 0.9182,
-Best val mrr: 0.9443, Best test mrr: 0.9182, Best iter: 6260
+Train mrr: 0.9597, Val mrr: 0.3394, Test mrr: 0.4443, 
+Best val mrr: 0.3394, Best test mrr: 0.4443, Best iter: 3130
 
 #### GSF Main
 Train mrr: 0.9988, Val mrr: 0.3039, Test mrr: 0.3953, 

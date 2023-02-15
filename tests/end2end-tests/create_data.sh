@@ -15,11 +15,11 @@ python3 /$GS_HOME/python/graphstorm/data/tools/preprocess_movielens.py \
 export PYTHONPATH=$GS_HOME/python/
 python3 /$GS_HOME/tools/partition_graph.py --dataset movie-lens-100k \
 	--filepath /data \
-	--predict_ntypes movie \
+	--predict_ntype movie \
 	--undirected \
 	--num_trainers_per_machine 4 \
 	--output movielen_100k_train_val_1p_4t \
-	--generate_new_split true \
+	--generate_new_node_split true \
 	--balance_train \
 	--balance_edges \
 	--num_parts 1
@@ -27,12 +27,13 @@ python3 /$GS_HOME/tools/partition_graph.py --dataset movie-lens-100k \
 export PYTHONPATH=$GS_HOME/python/
 python3 /$GS_HOME/tools/partition_graph_lp.py --dataset movie-lens-100k \
 	--filepath /data \
-	--predict_etypes "user,rating,movie" \
+	--predict_etype "user,rating,movie" \
 	--num_trainers_per_machine 4 \
 	--output movielen_100k_lp_train_val_1p_4t \
 	--balance_train \
 	--balance_edges \
-	--edge_pct 0.8 \
+	--train_pct 0.1 \
+	--val_pct 0.1 \
 	--num_parts 1
 
 # movielens node class
@@ -43,30 +44,34 @@ python3 /$GS_HOME/tests/end2end-tests/data_gen/remove_mask.py --dataset movielen
 
 # movielens edge regression
 export PYTHONPATH=$GS_HOME/python/
-python3 /$GS_HOME/tools/partition_graph_lp.py --dataset movie-lens-100k \
+python3 /$GS_HOME/tools/partition_graph.py --dataset movie-lens-100k \
 	--filepath /data \
-    --elabel_fields "user,rating,movie:rate" \
-    --predict_etypes "user,rating,movie" \
-    --etask_types "user,rating,movie:regression" \
+    --elabel_field "user,rating,movie:rate" \
+    --predict_etype "user,rating,movie" \
+    --etask_type "regression" \
 	--num_trainers_per_machine 4 \
 	--output movielen_100k_er_1p_4t \
 	--balance_train \
 	--balance_edges \
-	--edge_pct 0.2 \
+	--generate_new_edge_split true \
+	--train_pct 0.1 \
+	--val_pct 0.1 \
 	--num_parts 1
 
 # dummy data Edge Classification
 export PYTHONPATH=$GS_HOME/python/
-python3 /$GS_HOME/tools/partition_graph_lp.py --dataset movie-lens-100k \
+python3 /$GS_HOME/tools/partition_graph.py --dataset movie-lens-100k \
 	--filepath /data \
-    --elabel_fields "user,rating,movie:rate" \
-    --predict_etypes "user,rating,movie" \
-    --etask_types "user,rating,movie:classify" \
+    --elabel_field "user,rating,movie:rate" \
+    --predict_etype "user,rating,movie" \
+    --etask_type "classification" \
 	--num_trainers_per_machine 4 \
 	--output movielen_100k_ec_1p_4t \
 	--balance_train \
 	--balance_edges \
-	--edge_pct 0.2 \
+	--generate_new_edge_split true \
+	--train_pct 0.1 \
+	--val_pct 0.1 \
 	--num_parts 1
 
 rm -Rf /data/movielen_100k_multi_label_ec
