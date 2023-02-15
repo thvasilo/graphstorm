@@ -10,7 +10,7 @@ docker run -v $DATA_FOLDER/:/data -v $GS_HOME/:/graph-storm -v /dev/shm:/dev/shm
 Run the graph partitioning command.
 
 ```
-python3 /graph-storm/tools/partition_graph_lp.py --dataset ogbn-papers100M --num_parts 4 --balance_train --balance_edges --output /data/ogbn-papers100M-4p --edge_pct 0.8 --filepath /data
+python3 /graph-storm/tools/partition_graph_lp.py --dataset ogbn-papers100M --num_parts 4 --balance_train --balance_edges --output /data/ogbn-papers100M-4p --train_pct 0.1 --filepath /data
 ```
 
 ## Distributed training

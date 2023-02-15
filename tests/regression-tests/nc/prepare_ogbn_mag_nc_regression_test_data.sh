@@ -14,7 +14,8 @@ python3 -u $GSF_HOME/tools/partition_graph.py --dataset ogbn-mag \
                                               --filepath ${REG_DATA_PATH}/ogbn-mag/ \
                                               --num_parts 1 \
                                               --num_trainers_per_machine 4 \
-                                              --predict_ntypes paper \
+                                              --predict_ntype paper \
+                                              --nlabel_field paper:labels \
                                               --output ${REG_DATA_PATH}/ogb_mag_nc_train_val_1p_4t
 
 date

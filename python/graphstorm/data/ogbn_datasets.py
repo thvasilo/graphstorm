@@ -53,7 +53,7 @@ class OGBTextFeatDataset(GSgnnTextDataset):
         self._raw_dir = raw_dir
         self.self_loop = self_loop
         self.max_sequence_length = max_sequence_length
-        self.target_etype = ["interacts"]
+        self.target_etype = ("node", "interacts", "node")
         self.edge_pct = edge_pct
         if dataset == "ogbn-products":
             self._num_classes = 47

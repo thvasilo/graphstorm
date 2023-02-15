@@ -324,7 +324,7 @@ def main(args):
     
     # After training, get the best model from the trainer.
     best_model = trainer.get_best_model()
-    
+
     # Create a dataset for inference.
     infer_data = GSgnnNodeInferData(config.graph_name, config.part_config,
                                     eval_ntypes=config.predict_ntype,
