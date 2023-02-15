@@ -40,7 +40,15 @@ def main(args):
     trainer.setup_cuda(dev_id=config.local_rank)
     if not config.no_validation:
         # TODO(zhengda) we need to refactor the evaluator.
-        trainer.setup_evaluator(GSgnnMrrLPEvaluator(config, train_data))
+        trainer.setup_evaluator(
+            GSgnnMrrLPEvaluator(config.evaluation_frequency,
+                                train_data,
+                                config.num_negative_edges_eval,
+                                config.use_dot_product,
+                                config.enable_early_stop,
+                                config.call_to_consider_early_stop,
+                                config.window_for_early_stop,
+                                config.early_stop_strategy))
         assert len(train_data.val_idxs) > 0, "The training data do not have validation set."
         # TODO(zhengda) we need to compute the size of the entire validation set to make sure
         # we have validation data.

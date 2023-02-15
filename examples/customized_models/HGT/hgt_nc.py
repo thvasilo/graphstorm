@@ -130,13 +130,13 @@ class HGTLayer(nn.Module):
                     new_h[ntype] = self.norms[n_id](trans_out)
                 else:
                     new_h[ntype] = trans_out
-                    
+
             return new_h
 
 
 class HGT(gsmodel.GSgnnNodeModelBase):
-    def __init__(self, 
-                 node_id_dict,      # node type and id in order, 
+    def __init__(self,
+                 node_id_dict,      # node type and id in order,
                                     #   e.g., {'author': 0, 'paper': 1, 'subject': 2}
                  edge_id_dict,      # edge type and id in order,
                                     #   e.g., {'writing': 0, 'cited': 1, 'citing': 2}
@@ -145,7 +145,7 @@ class HGT(gsmodel.GSgnnNodeModelBase):
                  n_hid,             # hidden dimension
                  n_out,             # output dimension
                  n_layers,          # number of gnn layers
-                 n_heads,           # number of attention 
+                 n_heads,           # number of attention
                  predict_ntype,     # the node type to be predict
                  use_norm = True,   # use normalization or not, default is True
                  alpha_l2norm = 0
@@ -156,7 +156,7 @@ class HGT(gsmodel.GSgnnNodeModelBase):
         self.n_layers = n_layers
         self.predict_ntype=predict_ntype
         self.alpha_l2norm = alpha_l2norm
-        
+
         # set adapt weights according to node id and feature dimension dictionary
         self.adapt_ws = nn.ModuleDict()
         featureless_ntype_cnt = 0
@@ -175,7 +175,7 @@ class HGT(gsmodel.GSgnnNodeModelBase):
         # hgt layers
         self.gcs = nn.ModuleList()
         for _ in range(n_layers):
-            self.gcs.append(HGTLayer(n_hid, 
+            self.gcs.append(HGTLayer(n_hid,
                                      n_hid,
                                      node_id_dict,
                                      edge_id_dict,
@@ -183,7 +183,7 @@ class HGT(gsmodel.GSgnnNodeModelBase):
                                      use_norm = use_norm))
         # output layer for classification
         self.out = nn.Linear(n_hid, n_out)
-        
+
         # use GSF components
         self._loss_fn = gsmodel.ClassifyLossFunc(multilabel=False)
 
@@ -204,14 +204,14 @@ class HGT(gsmodel.GSgnnNodeModelBase):
             h = self.gcs[i](blocks[i], h)
 
         pred_loss = self._loss_fn(h[self.predict_ntype], labels[self.predict_ntype])
-        
+
         reg_loss = torch.tensor(0.).to(pred_loss.device)
         # L2 regularization of dense parameters
         for d_para in self.parameters():
             reg_loss += d_para.square().sum()
 
         reg_loss = self.alpha_l2norm * reg_loss
-        
+
         return pred_loss + reg_loss
 
     def predict(self, blocks, node_feats, _):
@@ -241,7 +241,7 @@ class HGT(gsmodel.GSgnnNodeModelBase):
     def create_optimizer(self, lr=0.001):
         # Here we don't set up an optimizer for sparse embeddings.
         return torch.optim.Adam(self.parameters(), lr=lr)
-        
+
 
 def main(args):
     gs.initialize(ip_config=args.ip_config, backend="gloo")
@@ -288,7 +288,7 @@ def main(args):
                 predict_ntype=config.predict_ntype,
                 use_norm=True,
                 alpha_l2norm=config.alpha_l2norm)
-    
+
     # Create a trainer for the node classification task.
     trainer = GSgnnNodePredictionTrainer(model, gs.get_rank(), topk_model_to_save=1)
     trainer.setup_cuda(dev_id=gs.get_rank())
@@ -302,14 +302,20 @@ def main(args):
     eval_dataloader = GSgnnNodeDataLoader(train_data, train_data.val_idxs,fanout=config.fanout,
                                           batch_size=config.eval_batch_size, device=device,
                                           train_task=False)
-    
+
     # Optional: Define the evaluation dataloader
     test_dataloader = GSgnnNodeDataLoader(train_data, train_data.test_idxs,fanout=config.fanout,
                                           batch_size=config.eval_batch_size, device=device,
                                           train_task=False)
 
     # Optional: set up a evaluator
-    evaluator = GSgnnAccEvaluator(config)
+    evaluator = GSgnnAccEvaluator(config.evaluation_frequency,
+                                  config.eval_metric,
+                                  config.multilabel,
+                                  config.enable_early_stop,
+                                  config.call_to_consider_early_stop,
+                                  config.window_for_early_stop,
+                                  config.early_stop_strategy)
     trainer.setup_evaluator(evaluator)
     # Optional: set up a task tracker to show the progress of training.
     tracker = GSSageMakerTaskTracker(config, gs.get_rank())
@@ -317,11 +323,11 @@ def main(args):
 
     # Start the training process.
     trainer.fit(train_loader=dataloader, n_epochs=config.n_epochs,
-                val_loader=eval_dataloader, 
+                val_loader=eval_dataloader,
                 test_loader=test_dataloader,
                 save_model_path=config.save_model_path,
                 mini_batch_infer=True)
-    
+
     # After training, get the best model from the trainer.
     best_model = trainer.get_best_model()
 
@@ -357,6 +363,6 @@ if __name__ == '__main__':
     argparser.add_argument("--local_rank", type=int,
                            help="The rank of the trainer. MUST have this argument!!")
     args = argparser.parse_args()
-    
+
     print(args)
     main(args)

@@ -27,7 +27,15 @@ def main(args):
     infer = GSgnnLinkPredictionInfer(model, gs.get_rank())
     infer.setup_cuda(dev_id=config.local_rank)
     if not config.no_validation:
-        infer.setup_evaluator(GSgnnMrrLPEvaluator(config, infer_data))
+        infer.setup_evaluator(
+            GSgnnMrrLPEvaluator(config.evaluation_frequency,
+                                infer_data,
+                                config.num_negative_edges_eval,
+                                config.use_dot_product,
+                                config.enable_early_stop,
+                                config.call_to_consider_early_stop,
+                                config.window_for_early_stop,
+                                config.early_stop_strategy))
         assert len(infer_data.test_idxs) > 0, "There is not test data for evaluation."
     tracker = gs.create_builtin_task_tracker(config, infer.rank)
     infer.setup_task_tracker(tracker)
