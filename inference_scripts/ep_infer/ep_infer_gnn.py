@@ -9,13 +9,24 @@ from graphstorm.inference import GSgnnEdgePredictionInfer
 from graphstorm.eval import GSgnnAccEvaluator, GSgnnRegressionEvaluator
 from graphstorm.dataloading import GSgnnEdgeInferData, GSgnnEdgeDataLoader
 
-def get_eval_class(config): # pylint: disable=unused-argument
+def get_evaluator(config): # pylint: disable=unused-argument
     """ Get evaluator class
     """
     if config.task_type == "edge_regression":
-        return GSgnnRegressionEvaluator
+        return GSgnnRegressionEvaluator(config.evaluation_frequency,
+                                        config.eval_metric,
+                                        config.enable_early_stop,
+                                        config.call_to_consider_early_stop,
+                                        config.window_for_early_stop,
+                                        config.early_stop_strategy)
     elif config.task_type == 'edge_classification':
-        return GSgnnAccEvaluator
+        return GSgnnAccEvaluator(config.evaluation_frequency,
+                                 config.eval_metric,
+                                 config.multilabel,
+                                 config.enable_early_stop,
+                                 config.call_to_consider_early_stop,
+                                 config.window_for_early_stop,
+                                 config.early_stop_strategy)
     else:
         raise AttributeError(config.task_type + ' is not supported.')
 
@@ -34,8 +45,8 @@ def main(args):
     infer = GSgnnEdgePredictionInfer(model, gs.get_rank())
     infer.setup_cuda(dev_id=config.local_rank)
     if not config.no_validation:
-        eval_class = get_eval_class(config)
-        infer.setup_evaluator(eval_class(config))
+        evaluator = get_evaluator(config)
+        infer.setup_evaluator(evaluator)
         assert len(infer_data.test_idxs) > 0, "There is not test data for evaluation."
     tracker = gs.create_builtin_task_tracker(config, infer.rank)
     infer.setup_task_tracker(tracker)

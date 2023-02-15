@@ -12,11 +12,22 @@ from graphstorm.eval import GSgnnRegressionEvaluator
 from graphstorm.model.utils import save_embeddings
 from graphstorm.model import do_full_graph_inference
 
-def get_eval_class(config):
+def get_evaluator(config):
     if config.task_type == "node_classification":
-        return GSgnnAccEvaluator
+        return GSgnnAccEvaluator(config.evaluation_frequency,
+                                 config.eval_metric,
+                                 config.multilabel,
+                                 config.enable_early_stop,
+                                 config.call_to_consider_early_stop,
+                                 config.window_for_early_stop,
+                                 config.early_stop_strategy)
     elif config.task_type == "node_regression":
-        return GSgnnRegressionEvaluator
+        return GSgnnRegressionEvaluator(config.evaluation_frequency,
+                                        config.eval_metric,
+                                        config.enable_early_stop,
+                                        config.call_to_consider_early_stop,
+                                        config.window_for_early_stop,
+                                        config.early_stop_strategy)
     else:
         raise ValueError("Unknown task type")
 
@@ -36,9 +47,8 @@ def main(args):
         trainer.restore_model(model_path=config.restore_model_path)
     trainer.setup_cuda(dev_id=config.local_rank)
     if not config.no_validation:
-        # TODO(zhengda) we need to refactor the evaluator.
-        eval_cls = get_eval_class(config)
-        trainer.setup_evaluator(eval_cls(config))
+        evaluator = get_evaluator(config)
+        trainer.setup_evaluator(evaluator)
         assert len(train_data.val_idxs) > 0, "The training data do not have validation set."
         # TODO(zhengda) we need to compute the size of the entire validation set to make sure
         # we have validation data.
