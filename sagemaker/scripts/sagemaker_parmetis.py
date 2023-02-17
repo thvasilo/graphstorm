@@ -355,8 +355,8 @@ def download_data_from_s3(input_s3, local_data_path, sagemaker_session):
     try:
         S3Downloader.download(input_s3,
             local_data_path, sagemaker_session=sagemaker_session)
-    except Exception: # pylint: disable=broad-except
-        print(f"Can not download {input_s3}.")
+    except Exception as ex: # pylint: disable=broad-except
+        print(f"Can not download {input_s3}. {ex}")
         raise RuntimeError(f"Can not download {input_s3}.")
 
 def upload_file_to_s3(data_path_s3_path, local_data_path, sagemaker_session):
@@ -375,8 +375,8 @@ def upload_file_to_s3(data_path_s3_path, local_data_path, sagemaker_session):
     try:
         ret = S3Uploader.upload(local_data_path, data_path_s3_path,
             sagemaker_session=sagemaker_session)
-    except Exception: # pylint: disable=broad-except
-        print(f"Can not upload data into {data_path_s3_path}")
+    except Exception as ex: # pylint: disable=broad-except
+        print(f"Can not upload data into {data_path_s3_path}. {ex}")
         raise RuntimeError(f"Can not upload data into {data_path_s3_path}")
     return ret
 
@@ -414,7 +414,9 @@ def main():
     world_size = len(hosts)
     os.environ['WORLD_SIZE'] = str(world_size)
     host_rank = hosts.index(current_host)
-    assert args.graph_name is not None, "Graph name must be provided"
+
+    boto_session = boto3.session.Session(region_name=os.environ['AWS_REGION'])
+    sagemaker_session = sagemaker.session.Session(boto_session=boto_session)
 
     try:
         for host in hosts:
@@ -460,8 +462,20 @@ def main():
     output_s3 = args.output_data_s3
     metadata_filename = args.metadata_filename
 
-    boto_session = boto3.session.Session(region_name=os.environ['AWS_REGION'])
-    sagemaker_session = sagemaker.session.Session(boto_session=boto_session)
+    # Get meta info first
+    graph_data_s3_without_trailing = graph_data_s3[:-1] \
+        if graph_data_s3.endswith('/') else graph_data_s3
+    graph_config_s3_path = f"{graph_data_s3_without_trailing}/{metadata_filename}"
+    meta_info_file = os.path.join(tmp_data_path, metadata_filename)
+    if not os.path.exists(meta_info_file):
+        print(f"Downloading metadata file from {graph_config_s3_path} into {meta_info_file}")
+        download_data_from_s3(graph_config_s3_path, tmp_data_path,
+            sagemaker_session=sagemaker_session)
+
+    with open(meta_info_file, 'r') as f:
+        graph_config = json.load(f)
+        graph_name = graph_config["graph_name"]
+
     graph_data_path, meta_info_file = download_graph(graph_data_s3,
         metadata_filename,
         world_size,
