@@ -10,16 +10,14 @@ def test_moveliens100k_dataset_normal():
     dataset_config = {
         'raw_dir': '/data',
         'max_sequence_length': 512,
-        'retain_original_features': False,
-        'user_text': False,
+        'use_text_feat': False,
         'use_age_as_label': False,
         'save_path': '/data/data/'
     }
 
     dataset = MovieLens100kNCDataset(raw_dir=dataset_config['raw_dir'],
                                      max_sequence_length=dataset_config['max_sequence_length'],
-                                     retain_original_features=dataset_config['retain_original_features'],
-                                     user_text=dataset_config['user_text'],
+                                     use_text_feat=dataset_config['use_text_feat'],
                                      user_age_as_label=dataset_config['use_age_as_label'])
 
     # test dataset own property

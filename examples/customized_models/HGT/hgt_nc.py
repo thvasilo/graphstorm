@@ -187,7 +187,7 @@ class HGT(gsmodel.GSgnnNodeModelBase):
         # use GSF components
         self._loss_fn = gsmodel.ClassifyLossFunc(multilabel=False)
 
-    def forward(self, blocks, node_feats, _, labels):
+    def forward(self, blocks, node_feats, edge_feats, labels, epoch=-1, total_steps=-1):
         h = {}
         for ntype in blocks[0].ntypes:
             if self.adapt_ws[ntype] is None:

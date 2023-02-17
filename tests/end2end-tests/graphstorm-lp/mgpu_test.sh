@@ -198,6 +198,37 @@ then
 	exit -1
 fi
 
+echo "**************dataset: Movielens, RGCN layer 1, BERT nodes: movie, user , inference: full-graph, negative_sampler: joint, decoder: DistMult, exclude_training_targets: true, save model"
+python3 $DGL_HOME/tools/launch.py --workspace $GS_HOME/training_scripts/gsgnn_lp --num_trainers $NUM_TRAINERS --num_servers 1 --num_samplers 0 --part_config /data/movielen_100k_text_lp_train_val_1p_4t/movie-lens-100k-text.json --ip_config ip_list.txt --ssh_port 2222 "python3 gsgnn_lp.py --cf ml_lp_text.yaml --fanout '10' --n-layers 1 --mini-batch-infer false  --use-node-embeddings true --num-gpus $NUM_TRAINERS --part-config /data/movielen_100k_text_lp_train_val_1p_4t/movie-lens-100k-text.json --save-model-path /data/gsgnn_lp_ml_distmult_text/ --topk-model-to-save 1 --save-model-per-iter 1000 --save-embed-path /data/gsgnn_lp_ml_distmult_text/emb/ --use-dot-product False --train-etype user,rating,movie movie,rating-rev,user" | tee train_log.txt
+
+error_and_exit $?
+
+best_epoch_distmult=$(grep "successfully save the model to" train_log.txt | tail -1 | tr -d '\n' | tail -c 1)
+echo "The best model is saved in epoch $best_epoch_distmult"
+
+echo "**************dataset: Movielens text, do inference on saved model, decoder: DistMult"
+python3 $DGL_HOME/tools/launch.py --workspace $GS_HOME/inference_scripts/lp_infer --num_trainers $NUM_INFO_TRAINERS --num_servers 1 --num_samplers 0 --part_config /data/movielen_100k_text_lp_train_val_1p_4t/movie-lens-100k-text.json --ip_config ip_list.txt --ssh_port 2222 "python3 lp_infer_gnn.py --cf ml_lp_text_infer.yaml --fanout '10' --n-layers 1 --mini-batch-infer false --use-node-embeddings true --num-gpus $NUM_INFO_TRAINERS --part-config /data/movielen_100k_text_lp_train_val_1p_4t/movie-lens-100k-text.json --save-embed-path /data/gsgnn_lp_ml_distmult_text/infer-emb/ --restore-model-path /data/gsgnn_lp_ml_distmult_text/epoch-$best_epoch_distmult/ --use-dot-product False --no-validation True --train-etype user,rating,movie movie,rating-rev,user" | tee log2.txt
+
+error_and_exit $?
+
+python3 $GS_HOME/tests/end2end-tests/check_infer.py --train_embout /data/gsgnn_lp_ml_distmult_text/emb/ --infer_embout /data/gsgnn_lp_ml_distmult_text/infer-emb/ --link_prediction
+
+error_and_exit $?
+
+cnt=$(ls /data/gsgnn_lp_ml_distmult_text/infer-emb/ | grep rel_emb.pt | wc -l)
+if test $cnt -ne 1
+then
+    echo "DistMult inference outputs edge embedding"
+    exit -1
+fi
+
+cnt=$(ls /data/gsgnn_lp_ml_distmult_text/infer-emb/ | grep relation2id_map.json | wc -l)
+if test $cnt -ne 1
+then
+    echo "DistMult inference outputs edge embedding"
+    exit -1
+fi
+
 echo "**************dataset: Movielens, RGCN layer 2, node feat: fixed HF BERT, inference: full-graph, negative_sampler: joint, decoder: DistMult, exclude_training_targets: true, test_negative_sampler: joint"
 python3 $DGL_HOME/tools/launch.py --workspace $GS_HOME/training_scripts/gsgnn_lp --num_trainers $NUM_TRAINERS --num_servers 1 --num_samplers 0 --part_config /data/movielen_100k_lp_train_val_1p_4t/movie-lens-100k.json --ip_config ip_list.txt --ssh_port 2222 "python3 gsgnn_lp.py --cf ml_lp.yaml --fanout '10,15' --n-layers 2 --mini-batch-infer false --num-gpus $NUM_TRAINERS --part-config /data/movielen_100k_lp_train_val_1p_4t/movie-lens-100k.json --use-dot-product False --train-etype user,rating,movie movie,rating-rev,user"
 

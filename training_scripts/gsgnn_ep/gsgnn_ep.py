@@ -80,6 +80,11 @@ def main(args):
             device=device, train_task=False,
             reverse_edge_types_map=config.reverse_edge_types_map,
             remove_target_edge_type=config.remove_target_edge_type)
+
+    # Preparing input layer for training or inference.
+    # The input layer can pre-compute node features in the preparing step if needed.
+    # For example pre-compute all BERT embeddings
+    model.prepare_input_encoder(train_data)
     trainer.fit(train_loader=dataloader, val_loader=val_dataloader,
                 test_loader=test_dataloader, n_epochs=config.n_epochs,
                 save_model_path=config.save_model_path,

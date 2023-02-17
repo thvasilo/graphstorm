@@ -48,6 +48,7 @@ class GSgnnNodePredictionInfer(GSInfer):
         """
         do_eval = self.evaluator is not None
         sys_tracker.check('start inferencing')
+        self._model.eval()
         if mini_batch_infer:
             res = node_mini_batch_gnn_predict(self._model, loader, return_label=do_eval)
             pred = res[0]

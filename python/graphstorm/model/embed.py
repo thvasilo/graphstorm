@@ -106,6 +106,10 @@ class GSNodeInputLayer(GSLayer):
                                 init_emb,
                                 part_policy=part_policy)
 
+    def warmup(self, _):
+        """ Do nothing
+        """
+
     def has_dense_params(self):
         """ test if the module has dense parameters.
         """
@@ -123,7 +127,7 @@ class GSNodeInputLayer(GSLayer):
         else:
             return []
 
-    def forward(self, input_feats, input_nodes):
+    def forward(self, input_feats, input_nodes, *_):
         """Forward computation
 
         Parameters

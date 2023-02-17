@@ -1,21 +1,20 @@
 ---
 version: 1.0
 lm_model:
-  bert_models: # bert model(s) definition, one bert model for each node type having text data
+  node_lm_models:
     -
-      node_type: movie
+      lm_type: bert
       model_name: "bert-base-uncased"
       gradient_checkpoint: true
-    -
-      node_type: user
-      model_name: "bert-base-uncased"
-      gradient_checkpoint: true
+      node_types:
+        - movie
+        - user
 gsf:
   basic:
-    backend: nccl
+    backend: gloo
     num_gpus: 4
     ip_config: ip_list.txt
-    part_config: movielen_100k_utext_train_val_1p_4t/movie-lens-100k.json
+    part_config: movielen_100k_text_lp_train_val_1p_4t/movie-lens-100k.json
     verbose: false
     debug: false
     save_perf_results_path: null
@@ -25,12 +24,15 @@ gsf:
     n_layers: 1
     n_hidden: 128
     mini_batch_infer: true
+  lm:
+    lm_train_nodes: 10
+    lm_infer_batchszie: 32
+    freeze_lm_encoder_epochs: 0
   input:
     restore_model_path: null
   output:
-    save_model_path: ./models/movielen_100k/train_val/movielen_100k_train_val_1p_4t_model
+    save_model_path: null
     save_embed_path: null
-    save_model_per_iters: 1000
   hyperparam:
     dropout: 0.
     lr: 0.001

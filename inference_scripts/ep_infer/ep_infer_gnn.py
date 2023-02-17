@@ -57,7 +57,10 @@ def main(args):
                                      device=device, train_task=False,
                                      reverse_edge_types_map=config.reverse_edge_types_map,
                                      remove_target_edge_type=config.remove_target_edge_type)
-
+    # Preparing input layer for training or inference.
+    # The input layer can pre-compute node features in the preparing step if needed.
+    # For example pre-compute all BERT embeddings
+    model.prepare_input_encoder(infer_data)
     infer.infer(dataloader, save_embed_path=config.save_embed_path,
                 save_predict_path=config.save_predict_path,
                 mini_batch_infer=config.mini_batch_infer)

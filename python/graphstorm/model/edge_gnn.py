@@ -12,7 +12,8 @@ class GSgnnEdgeModelInterface:
     This interface defines two main methods for training and inference.
     """
     @abc.abstractmethod
-    def forward(self, blocks, batch_graph, node_feats, edge_feats, labels):
+    def forward(self, blocks, batch_graph, node_feats, edge_feats,
+        labels, epoch=-1, total_steps=-1):
         """ The forward function for edge prediction.
 
         This method is used for training. It takes a mini-batch, including
@@ -31,6 +32,12 @@ class GSgnnEdgeModelInterface:
             The input edge features of the message passing graphs.
         labels: dict of Tensor
             The labels of the predicted edges.
+        epoch: int
+            Current training epoch
+            Default -1 means epoch is not initialized. (e.g., in prediction)
+        total_steps: int
+            Current training steps (iterations)
+            Default -1 means training step is not initialized. (e.g., in prediction)
 
         Returns
         -------
@@ -79,13 +86,14 @@ class GSgnnEdgeModel(GSgnnModel, GSgnnEdgeModelInterface):
         super(GSgnnEdgeModel, self).__init__()
         self.alpha_l2norm = alpha_l2norm
 
-    def forward(self, blocks, batch_graph, node_feats, _, labels):
+    def forward(self, blocks, batch_graph, node_feats, _,
+        labels, epoch=-1, total_steps=-1):
         """ The forward function for edge prediction.
 
         This GNN model doesn't support edge features right now.
         """
         alpha_l2norm = self.alpha_l2norm
-        gnn_embs = self.compute_embed_step(blocks, node_feats)
+        gnn_embs = self.compute_embed_step(blocks, node_feats, epoch, total_steps)
         # TODO(zhengda) we only support prediction on one edge type now
         assert len(labels) == 1, "We only support prediction on one edge type for now."
         target_etype = list(labels.keys())[0]

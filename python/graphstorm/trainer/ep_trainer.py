@@ -67,7 +67,8 @@ class GSgnnEdgePredictionTrainer(GSgnnTrainer):
                     "Only GSgnnModel supports full-graph inference."
 
         model = DistributedDataParallel(self._model, device_ids=[self.dev_id],
-                                        output_device=self.dev_id)
+                                        output_device=self.dev_id,
+                                        static_graph=True)
         device = model.device
 
         # training loop
@@ -105,7 +106,7 @@ class GSgnnEdgePredictionTrainer(GSgnnTrainer):
 
                 t2 = time.time()
                 # TODO(zhengda) we don't support edge features for now.
-                loss = model(blocks, batch_graph, input_feats, None, lbl)
+                loss = model(blocks, batch_graph, input_feats, None, lbl, epoch, total_steps)
 
                 t3 = time.time()
                 self.optimizer.zero_grad()
@@ -127,7 +128,7 @@ class GSgnnEdgePredictionTrainer(GSgnnTrainer):
                 if self.evaluator is not None and \
                     self.evaluator.do_eval(total_steps, epoch_end=False):
                     val_score = self.eval(model.module, val_loader, test_loader, mini_batch_infer,
-                                          total_steps)
+                                        total_steps)
 
                     if self.evaluator.do_early_stop(val_score):
                         early_stop = True
@@ -153,7 +154,7 @@ class GSgnnEdgePredictionTrainer(GSgnnTrainer):
             val_score = None
             if self.evaluator is not None and self.evaluator.do_eval(total_steps, epoch_end=True):
                 val_score = self.eval(model.module, val_loader, test_loader, mini_batch_infer,
-                                      total_steps)
+                                    total_steps)
 
                 if self.evaluator.do_early_stop(val_score):
                     early_stop = True
@@ -204,6 +205,8 @@ class GSgnnEdgePredictionTrainer(GSgnnTrainer):
         """
         test_start = time.time()
         sys_tracker.check('start prediction')
+        model.eval()
+        print("call model.eval()")
         if mini_batch_infer:
             val_pred, val_label = edge_mini_batch_gnn_predict(model, val_loader,
                                                               return_label=True)
@@ -215,6 +218,7 @@ class GSgnnEdgePredictionTrainer(GSgnnTrainer):
                                                           return_label=True)
             test_pred, test_label = edge_mini_batch_predict(model, emb, test_loader,
                                                             return_label=True)
+        model.train()
         sys_tracker.check('predict')
         val_score, test_score = self.evaluator.evaluate(val_pred, test_pred,
                                                         val_label, test_label, total_steps)

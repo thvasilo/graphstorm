@@ -1,6 +1,7 @@
 """Package initialization. Import necessary classes.
 """
 from .embed import GSNodeInputLayer
+from .lm_embed import GSLMNodeInputLayer
 
 from .utils import sparse_emb_initializer
 
