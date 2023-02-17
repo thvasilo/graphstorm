@@ -29,6 +29,11 @@ def barrier_master(client_list, world_size):
     for rank in range(1, world_size):
         client_list[rank].send(b"synced")
 
+    for rank in range(1, world_size):
+        msg = client_list[rank].recv(12)
+        msg = msg.decode()
+        assert msg == "synced_ack"
+
 def barrier(master_sock):
     """ Worker node barrier, called by host_rank > 0
 
@@ -46,6 +51,8 @@ def barrier(master_sock):
     msg = master_sock.recv(8)
     msg = msg.decode()
     assert msg == "synced"
+
+    master_sock.send(b"synced_ack")
 
 def keep_alive(client_list, world_size, task_end):
     """ Keep the communication between master and workers alive
