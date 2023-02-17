@@ -34,7 +34,7 @@ if __name__ == "__main__":
                 'container_name': f'algo-{instance_idx}',
                 'hostname': f'algo-{instance_idx}',
                 'networks': ['mpi'],
-                'command': f'python3 sagemaker_parmetis.py --graph-name "{args.graph_name}" --graph-data-s3 "{args.graph_data_s3}" --num-parts {args.num_parts} --output-data-s3 "{args.output_data_s3}"',
+                'command': f'python3 sagemaker_parmetis.py --graph-data-s3 "{args.graph_data_s3}" --num-parts {args.num_parts} --output-data-s3 "{args.output_data_s3}"',
                 'environment':
                     {'SM_TRAINING_ENV': f'{{"hosts": {host_list}, "current_host": "algo-{instance_idx}"}}',
                     'WORLD_SIZE': world_size,

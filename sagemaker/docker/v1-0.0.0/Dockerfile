@@ -47,9 +47,15 @@ RUN pip install --pre --no-cache-dir dgl-cu113 -f https://data.dgl.ai/wheels-tes
 RUN pip install --no-cache-dir ogb
 RUN pip install pydantic
 
+# Copy workaround script for incorrect hostname
+COPY build_artifacts/changehostname.c /opt/ml/code/
+COPY build_artifacts/start_with_right_hostname.sh /usr/local/bin/start_with_right_hostname.sh
+
 # Download DGL source code
 RUN cd /root; git clone --recursive https://github.com/dmlc/dgl.git
-
+# Un-comment if we prefer a local DGL distribution
+# COPY dgl /root/dgl
+ENV PYTHONPATH="/root/dgl/tools/:${PYTHONPATH}"
 
 # /opt/ml and all subdirectories are utilized by SageMaker, we use the /code subdirectory to store our user code.
 COPY code/graphstorm /opt/ml/code/graphstorm/
