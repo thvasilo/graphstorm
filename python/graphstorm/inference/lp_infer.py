@@ -48,6 +48,7 @@ class GSgnnLinkPredictionInfer(GSInfer):
             avoid information leak for link prediction.
         """
         sys_tracker.check('start inferencing')
+        self._model.eval()
         embs = do_full_graph_inference(self._model, data,
                                        edge_mask=edge_mask_for_gnn_embeddings,
                                        task_tracker=self.task_tracker)

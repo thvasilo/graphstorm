@@ -60,14 +60,14 @@ if __name__ == '__main__':
     args = argparser.parse_args()
     print(args)
     start = time.time()
-    
+
     constructed_graph = False
 
     # arugment sanity check
     assert (args.train_pct + args.val_pct) <= 1, \
         "The sum of train and validation percentages should NOT larger than 1."
     edge_pct = args.train_pct + args.val_pct
-    
+
     # load graph data
     if args.dataset == 'ogbn-arxiv':
         dataset = OGBTextFeatDataset(args.filepath, args.dataset, edge_pct=edge_pct,
@@ -77,6 +77,9 @@ if __name__ == '__main__':
                                      retain_original_features=args.retain_original_features)
     elif args.dataset == 'movie-lens-100k':
         dataset = MovieLens100kNCDataset(args.filepath, edge_pct=edge_pct)
+    elif args.dataset == 'movie-lens-100k-text':
+        dataset = MovieLens100kNCDataset(args.filepath,
+                                         edge_pct=edge_pct, use_text_feat=True)
     elif args.dataset == 'ogbn-papers100M':
         dataset = OGBTextFeatDataset(args.filepath, dataset=args.dataset, edge_pct=edge_pct,
                                      retain_original_features=args.retain_original_features)

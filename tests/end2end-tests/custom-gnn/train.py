@@ -17,7 +17,7 @@ class MyGNNModel(gsmodel.GSgnnNodeModelBase):
         self._decoder = gsmodel.EntityClassifier(num_hidden, num_classes, multilabel=False)
         self._loss_fn = gsmodel.ClassifyLossFunc(multilabel=False)
 
-    def forward(self, blocks, node_feats, _, labels):
+    def forward(self, blocks, node_feats, _, labels, epoch=-1, total_steps=-1):
         input_nodes = {ntype: blocks[0].srcnodes[ntype].data[dgl.NID].cpu() \
                 for ntype in blocks[0].srctypes}
         embs = self._node_input(node_feats, input_nodes)
@@ -26,7 +26,7 @@ class MyGNNModel(gsmodel.GSgnnNodeModelBase):
         emb = embs[target_ntype]
         labels = labels[target_ntype]
         logits = self._decoder(emb)
-        
+
         pred_loss = self._loss_fn(logits, labels)
         # L2 regularization of trainable parameters, this also solves the unused weights error
         reg_loss = th.tensor(0.).to(pred_loss.device)

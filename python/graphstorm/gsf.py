@@ -8,6 +8,7 @@ from .config import BUILTIN_TASK_NODE_REGRESSION
 from .config import BUILTIN_TASK_EDGE_CLASSIFICATION
 from .config import BUILTIN_TASK_EDGE_REGRESSION
 from .model.embed import GSNodeInputLayer
+from .model.lm_embed import GSLMNodeInputLayer
 from .model.rgcn_encoder import RelationalGCNEncoder
 from .model.rgat_encoder import RelationalGATEncoder
 from .model.node_gnn import GSgnnNodeModel
@@ -252,9 +253,18 @@ def set_gnn_encoder(model, g, config, train_task):
     """
     # Set input layer
     feat_size = get_feat_size(g, config.feat_name)
-    encoder = GSNodeInputLayer(g, feat_size, config.n_hidden,
-                               dropout=config.dropout,
-                               use_node_embeddings=config.use_node_embeddings)
+    if config.node_lm_configs is not None:
+        encoder = GSLMNodeInputLayer(g, config.node_lm_configs,
+                                     feat_size, config.n_hidden,
+                                     num_train=config.lm_train_nodes,
+                                     lm_infer_batchszie=config.lm_infer_batchszie,
+                                     lm_freeze_epochs=config.freeze_lm_encoder_epochs,
+                                     dropout=config.dropout,
+                                     use_node_embeddings=config.use_node_embeddings)
+    else:
+        encoder = GSNodeInputLayer(g, feat_size, config.n_hidden,
+                                   dropout=config.dropout,
+                                   use_node_embeddings=config.use_node_embeddings)
     model.set_node_input_encoder(encoder)
 
     # Set GNN encoders

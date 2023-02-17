@@ -65,7 +65,8 @@ class GSgnnNodePredictionTrainer(GSgnnTrainer):
                     "Only GSgnnModel supports full-graph inference."
 
         model = DistributedDataParallel(self._model, device_ids=[self.dev_id],
-                                        output_device=self.dev_id)
+                                        output_device=self.dev_id,
+                                        static_graph=True)
         device = model.device
 
         # training loop
@@ -97,7 +98,7 @@ class GSgnnNodePredictionTrainer(GSgnnTrainer):
 
                 t2 = time.time()
                 # TODO(zhengda) we don't support edge features for now.
-                loss = model(blocks, input_feats, None, lbl)
+                loss = model(blocks, input_feats, None, lbl, epoch, total_steps)
 
                 t3 = time.time()
                 self.optimizer.zero_grad()

@@ -258,6 +258,22 @@ class GSgnnModel(GSgnnModelBase):    # pylint: disable=abstract-method
                 'The loss function should be the class of nn.Module.'
         self._loss_fn = loss_fn
 
+    def prepare_input_encoder(self, train_data):
+        """ Preparing input layer for training or inference.
+            The input layer can pre-compute node features in the preparing step
+            if needed. For example pre-compute all BERT embeddings
+
+        Parameters
+        ----------
+        train_data: GSgnnData
+            Graph data
+        """
+        if self._node_input_encoder is not None:
+            self._node_input_encoder.warmup(train_data.g)
+
+        if self._edge_input_encoder is not None:
+            self._edge_input_encoder.warmup(train_data.g)
+
     def restore_model(self, restore_model_path):
         """load saving checkpoints for GNN models.
 
@@ -312,7 +328,7 @@ class GSgnnModel(GSgnnModelBase):    # pylint: disable=abstract-method
         """
         return self._optimizer
 
-    def compute_embed_step(self, blocks, input_feats):
+    def compute_embed_step(self, blocks, input_feats, epoch=-1, total_steps=-1):
         """ Compute the GNN embeddings on a mini-batch.
 
         This function is used for mini-batch inference.
@@ -323,6 +339,12 @@ class GSgnnModel(GSgnnModelBase):    # pylint: disable=abstract-method
             The message flow graphs for computing GNN embeddings.
         input_feats : dict of Tensors
             The input node features.
+        epoch: int
+            Current training epoch
+            Default -1 means epoch is not initialized. (e.g., in prediction)
+        total_steps: int
+            Current training steps (iterations)
+            Default -1 means train step is not initialized. (e.g., in prediction)
 
         Returns
         -------
@@ -332,7 +354,7 @@ class GSgnnModel(GSgnnModelBase):    # pylint: disable=abstract-method
         if self.node_input_encoder is not None:
             input_nodes = {ntype: blocks[0].srcnodes[ntype].data[dgl.NID].cpu() \
                     for ntype in blocks[0].srctypes}
-            embs = self.node_input_encoder(input_feats, input_nodes)
+            embs = self.node_input_encoder(input_feats, input_nodes, epoch, total_steps)
             embs = {name: emb.to(device) for name, emb in embs.items()}
         else:
             embs = input_feats

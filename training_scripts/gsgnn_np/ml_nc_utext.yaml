@@ -1,15 +1,14 @@
 ---
 version: 1.0
 lm_model:
-  bert_models: # bert model(s) definition, one bert model for each node type having text data
+  node_lm_models:
     -
-      node_type: movie
+      lm_type: bert
       model_name: "bert-base-uncased"
       gradient_checkpoint: true
-    -
-      node_type: user
-      model_name: "bert-base-uncased"
-      gradient_checkpoint: true
+      node_types:
+        - movie
+        - user
 gsf:
   basic:
     backend: gloo
@@ -19,6 +18,10 @@ gsf:
     verbose: false
     debug: false
     save_perf_results_path: null
+  lm:
+    lm_train_nodes: 10
+    lm_infer_batchszie: 32
+    freeze_lm_encoder_epochs: 0
   gnn:
     model_encoder_type: rgcn
     fanout: "4"

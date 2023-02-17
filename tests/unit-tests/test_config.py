@@ -1364,6 +1364,150 @@ def test_load_io_info():
         assert config.save_embed_path == "./save_emb"
         assert config.save_predict_path == "./prediction"
 
+def create_lm_config(tmp_path, file_name):
+    yaml_object = create_dummpy_config_obj()
+    yaml_object["gsf"]["lm"] = {
+    }
+
+    # config for check default value
+    with open(os.path.join(tmp_path, file_name+"_default.yaml"), "w") as f:
+        yaml.dump(yaml_object, f)
+
+    yaml_object["gsf"]["lm"] = {
+        "lm_train_nodes": 10,
+        "lm_infer_batchszie": 64,
+        "freeze_lm_encoder_epochs": 3,
+        "node_lm_configs": [{"lm_type": "bert",
+                             "model_name": "bert-base-uncased",
+                             "gradient_checkpoint": False,
+                             "node_types": ['a']}]
+    }
+
+    with open(os.path.join(tmp_path, file_name+".yaml"), "w") as f:
+        yaml.dump(yaml_object, f)
+
+    yaml_object["gsf"]["lm"] = {
+        "lm_train_nodes": -1,
+        "lm_infer_batchszie": 1,
+        "freeze_lm_encoder_epochs": 0,
+        "node_lm_configs": None
+    }
+
+    with open(os.path.join(tmp_path, file_name+"2.yaml"), "w") as f:
+        yaml.dump(yaml_object, f)
+
+    yaml_object["gsf"]["output"] = {
+        "lm_train_nodes": -2,
+        "lm_infer_batchszie": -1,
+        "freeze_lm_encoder_epochs": -1,
+        "node_lm_configs": {"lm_type": "bert",
+                             "model_name": "bert-base-uncased",
+                             "gradient_checkpoint": False,
+                             "node_types": ['a']}
+    }
+
+    with open(os.path.join(tmp_path, file_name+"_fail.yaml"), "w") as f:
+        yaml.dump(yaml_object, f)
+
+    yaml_object["gsf"]["output"] = {
+        "node_lm_configs": []
+    }
+
+    with open(os.path.join(tmp_path, file_name+"_fail2.yaml"), "w") as f:
+        yaml.dump(yaml_object, f)
+
+def test_lm():
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmpdirname:
+        create_lm_config(Path(tmpdirname), 'lm_test')
+        args = Namespace(yaml_config_file=os.path.join(Path(tmpdirname), 'lm_test_default.yaml'),
+                         local_rank=0)
+
+        config = GSConfig(args)
+        assert config.lm_train_nodes == 0
+        assert config.lm_infer_batchszie == 32
+        assert config.freeze_lm_encoder_epochs == 0
+        assert config.node_lm_configs == None
+
+        args = Namespace(yaml_config_file=os.path.join(Path(tmpdirname), 'lm_test.yaml'),
+                         local_rank=0)
+        config = GSConfig(args)
+        assert config.lm_train_nodes == 10
+        assert config.lm_infer_batchszie == 64
+        assert config.freeze_lm_encoder_epochs == 3
+        assert config.node_lm_configs is not None
+        assert len(config.node_lm_configs) == 1
+
+        args = Namespace(yaml_config_file=os.path.join(Path(tmpdirname), 'lm_test2.yaml'),
+                         local_rank=0)
+        config = GSConfig(args)
+        assert config.lm_train_nodes == -1
+        assert config.lm_infer_batchszie == 1
+        assert config.freeze_lm_encoder_epochs == 0
+        assert config.node_lm_configs is None
+
+        args = Namespace(yaml_config_file=os.path.join(Path(tmpdirname), 'lm_test_fail.yaml'),
+                         local_rank=0)
+        config = GSConfig(args)
+        check_failure(config, "lm_train_nodes")
+        check_failure(config, "lm_infer_batchszie")
+        check_failure(config, "freeze_lm_encoder_epochs")
+        check_failure(config, "node_lm_configs")
+
+        args = Namespace(yaml_config_file=os.path.join(Path(tmpdirname), 'lm_test_fail2.yaml'),
+                         local_rank=0)
+        config = GSConfig(args)
+        check_failure(config, "node_lm_configs")
+
+def test_check_lm_config():
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmpdirname:
+        yaml_object = create_dummpy_config_obj()
+
+        with open(os.path.join(tmpdirname, "check_lm_config_default.yaml"), "w") as f:
+            yaml.dump(yaml_object, f)
+        args = Namespace(yaml_config_file=os.path.join(Path(tmpdirname),
+            'check_lm_config_default.yaml'), local_rank=0)
+        config = GSConfig(args)
+        lm_config = {"lm_type": "bert",
+                     "model_name": "bert-base-uncased",
+                     "gradient_checkpoint": True,
+                     "node_types": ['a']}
+        old_config = dict(lm_config)
+        config._check_lm_config(lm_config)
+        assert old_config == lm_config
+        lm_config = {"lm_type": "bert",
+                     "model_name": "bert-base-uncased",
+                     "node_types": ['a', 'b', 'c']}
+        config._check_lm_config(lm_config)
+        assert "gradient_checkpoint" in lm_config
+        assert lm_config["gradient_checkpoint"] == False
+
+        def must_fail(conf):
+            has_error = False
+            try:
+                config._check_lm_config(conf)
+            except:
+                has_error = True
+            assert has_error
+        lm_config = [{}]
+        must_fail(lm_config)
+
+        lm_config = [{"lm_type": "bert"}]
+        must_fail(lm_config)
+
+        lm_config = [{"lm_type": "bert",
+                      "model_name": "bert-base-uncased",}]
+        must_fail(lm_config)
+
+        lm_config = [{"lm_type": "bert",
+                      "model_name": "bert-base-uncased",
+                      "node_types": []}]
+        must_fail(lm_config)
+
+
+
+
 if __name__ == '__main__':
     test_load_basic_info()
     test_gnn_info()
@@ -1375,3 +1519,6 @@ if __name__ == '__main__':
     test_node_regress_info()
     test_edge_class_info()
     test_lp_info()
+
+    test_lm()
+    test_check_lm_config()

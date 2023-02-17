@@ -7,6 +7,8 @@ import json
 import dgl
 import torch as th
 
+from transformers import AutoTokenizer
+
 from .dataset import GSgnnDataset
 from .utils import parse_category_single_feat
 from .utils import get_id
@@ -15,7 +17,7 @@ class MovieLens100kNCDataset(GSgnnDataset):
     """r Movielens dataset for node classification
     """
     def __init__(self, raw_dir, edge_pct=1,
-                 max_sequence_length=512, retain_original_features=True, user_text=False,
+                 max_sequence_length=32, use_text_feat=False,
                  user_age_as_label=False, force_reload=False, verbose=True):
         """
         Parameters
@@ -26,10 +28,8 @@ class MovieLens100kNCDataset(GSgnnDataset):
             percentage of edges in the test set
         max_sequence_length: int
             what is the maximum supported sequence length
-        retain_original_features: bool
-            whether we retain the original features.
-        user_text: bool
-            whether to use occupation as user text
+        use_text_feat: bool
+            whether to generate text features
         force_reload: bool
             whether to reload the raw dataset
         verbose: bool
@@ -38,13 +38,10 @@ class MovieLens100kNCDataset(GSgnnDataset):
         name = 'ml-100k'
         url = None
         self.max_sequence_length = max_sequence_length
-        self.retain_original_features = retain_original_features
-        self.user_text = user_text
+        self.use_text_feat = use_text_feat
         self.user_age_as_label = user_age_as_label
         self.target_etype = ('user', 'rating', 'movie')
         self.edge_pct = edge_pct
-        if self.user_text:
-            assert self.retain_original_features
         super(MovieLens100kNCDataset, self).__init__(name,
                                                      url=url,
                                                      raw_dir=raw_dir,
@@ -120,30 +117,29 @@ class MovieLens100kNCDataset(GSgnnDataset):
             unids = th.tensor(unids, dtype=th.int64)
 
             age = th.tensor(age, dtype=th.float32)
-            if self.retain_original_features:
-                # encode age
+            # encode age
+            if not self.user_age_as_label:
+                min_age = th.min(age)
+                max_age = th.max(age)
+                age = (age - min_age) / (max_age - min_age)
+                age = age.unsqueeze(dim=1)
+
+            # encode gender
+            gender, _ = parse_category_single_feat(gender)
+            gender = th.tensor(gender, dtype=th.float32)
+
+            # encode occupation
+            if self.use_text_feat is False:
+                occupation, _ = parse_category_single_feat(occupation)
+                occupation = th.tensor(occupation, dtype=th.float32)
+                user_feat = th.cat((age, gender, occupation), dim=1) \
+                        if not self.user_age_as_label else th.cat((gender, occupation), dim=1)
+            else:
                 if not self.user_age_as_label:
-                    min_age = th.min(age)
-                    max_age = th.max(age)
-                    age = (age - min_age) / (max_age - min_age)
-                    age = age.unsqueeze(dim=1)
-
-                # encode gender
-                gender, _ = parse_category_single_feat(gender)
-                gender = th.tensor(gender, dtype=th.float32)
-
-                # encode occupation
-                if self.user_text is False:
-                    occupation, _ = parse_category_single_feat(occupation)
-                    occupation = th.tensor(occupation, dtype=th.float32)
-                    user_feat = th.cat((age, gender, occupation), dim=1) \
-                            if not self.user_age_as_label else th.cat((gender, occupation), dim=1)
+                    user_feat = th.cat((age, gender), dim=1)
                 else:
-                    if not self.user_age_as_label:
-                        user_feat = th.cat((age, gender), dim=1)
-                    else:
-                        user_feat = gender
-                    text_feat['user'] = occupation
+                    user_feat = gender
+                text_feat['user'] = occupation
 
         with open(item_file, newline='', encoding="ISO-8859-1") as csvfile:
             reader = csv.reader(csvfile, delimiter=separator)
@@ -173,13 +169,12 @@ class MovieLens100kNCDataset(GSgnnDataset):
             # title feature
             text_feat['movie'] = title
 
-            if self.retain_original_features:
-                # encode year
-                year = th.tensor(year, dtype=th.float32)
-                min_year = th.min(year)
-                max_year = th.max(year)
-                year = (year - min_year) / (max_year - min_year)
-                year = year.unsqueeze(dim=1)
+            # encode year
+            year = th.tensor(year, dtype=th.float32)
+            min_year = th.min(year)
+            max_year = th.max(year)
+            year = (year - min_year) / (max_year - min_year)
+            year = year.unsqueeze(dim=1)
 
             self._num_classes = len(movie_labels[0])
             # In movielens, a movie can have multiple genre tags.
@@ -237,15 +232,26 @@ class MovieLens100kNCDataset(GSgnnDataset):
             graph_edges[(key[2], key[1] + '-rev', key[0])] = (tails[key], heads[key])
 
         g = dgl.heterograph(graph_edges, num_nodes_dict=node_dicts)
-        if self.retain_original_features:
-            g.nodes['user'].data['feat'] = user_feat
-            g.nodes['movie'].data['feat'] = year
-        if self.user_text:
-            g.nodes['user'].data['text_idx'] = unids
-        g.nodes['movie'].data['text_idx'] = inids
+        g.nodes['user'].data['feat'] = user_feat
+        g.nodes['movie'].data['feat'] = year
         g.nodes['movie'].data['genre'] = movie_labels
         g.edges['rating'].data['rate'] = th.tensor(edge_data[('user', 'rating', 'movie')],
                                                    dtype=th.int32)
+        if self.use_text_feat:
+            # generate text feature
+            bert_model_name = "bert-base-uncased"
+            tokenizer = AutoTokenizer.from_pretrained(bert_model_name)
+            for ntype, raw_text in text_feat.items():
+                tokens = tokenizer(raw_text,
+                                max_length=self.max_sequence_length,
+                                truncation=True,
+                                padding='max_length',
+                                return_tensors='pt')
+                # we only use TOKEN_IDX and VALID_LEN_IDX
+                input_ids = tokens['input_ids']
+                valid_len = tokens['attention_mask'].sum(dim=1)
+                g.nodes[ntype].data['input_ids'] = input_ids
+                g.nodes[ntype].data['attention_mask'] = valid_len
 
         # split labels
         th.manual_seed(42)
@@ -320,7 +326,6 @@ class MovieLens100kNCDataset(GSgnnDataset):
         print(g)
 
         self._g = g
-        self._raw_text_feat = text_feat
 
     def __getitem__(self, idx):
         r"""Gets the data object at index.

@@ -68,7 +68,8 @@ class GSgnnLinkPredictionTrainer(GSgnnTrainer):
             assert isinstance(self._model, GSgnnModel), \
                     "Only GSgnnModel supports full-graph inference."
         model = DistributedDataParallel(self._model, device_ids=[self.dev_id],
-                                        output_device=self.dev_id)
+                                        output_device=self.dev_id,
+                                        static_graph=True)
         device = model.device
 
         # training loop
@@ -100,7 +101,8 @@ class GSgnnLinkPredictionTrainer(GSgnnTrainer):
 
                 t2 = time.time()
                 # TODO(zhengda) we don't support edge features for now.
-                loss = model(blocks, pos_graph, neg_graph, input_feats, None)
+                loss = model(blocks, pos_graph, neg_graph,
+                             input_feats, None, epoch, total_steps)
 
                 t3 = time.time()
                 self.optimizer.zero_grad()
@@ -202,6 +204,7 @@ class GSgnnLinkPredictionTrainer(GSgnnTrainer):
         """
         test_start = time.time()
         sys_tracker.check('before prediction')
+        model.eval()
         emb = do_full_graph_inference(model, data,
                                       edge_mask=edge_mask_for_gnn_embeddings,
                                       task_tracker=self.task_tracker)
@@ -214,6 +217,7 @@ class GSgnnLinkPredictionTrainer(GSgnnTrainer):
         val_score, test_score = self.evaluator.evaluate(
             val_scores, test_scores, total_steps)
         sys_tracker.check('evaluate validation/test')
+        model.train()
 
         if self.rank == 0:
             self.log_print_metrics(val_score=val_score,

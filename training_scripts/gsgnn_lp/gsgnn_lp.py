@@ -89,6 +89,11 @@ def main(args):
         config.eval_batch_size, config.num_negative_edges_eval)
     test_dataloader = test_dataloader_cls(train_data, train_data.test_idxs,
         config.eval_batch_size, config.num_negative_edges_eval)
+
+    # Preparing input layer for training or inference.
+    # The input layer can pre-compute node features in the preparing step if needed.
+    # For example pre-compute all BERT embeddings
+    model.prepare_input_encoder(train_data)
     trainer.fit(train_loader=dataloader, val_loader=val_dataloader,
                 test_loader=test_dataloader, n_epochs=config.n_epochs,
                 save_model_path=config.save_model_path,

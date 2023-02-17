@@ -15,8 +15,6 @@ gsf:
     ip_config: ip_list.txt
     part_config: null
     verbose: false
-    gnn_warmup_epochs: 0
-    mixed_precision: false
     no_validation: false
     mp_opt_level: O1
     train_nodes: 0

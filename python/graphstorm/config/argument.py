@@ -73,6 +73,7 @@ def get_argument_parser():
     parser = _add_node_classification_args(parser)
     parser = _add_edge_classification_args(parser)
     parser = _add_task_general_args(parser)
+    parser = _add_lm_model_args(parser)
     return parser
 
 # pylint: disable=no-member
@@ -98,9 +99,32 @@ class GSConfig:
     def set_attributes(self, configuration):
         """Set class attributes from 2nd level arguments in yaml config"""
         print(configuration)
+        if 'lm_model' in configuration:
+            # has language model configuration
+            # lm_model:
+            #   node_lm_models:
+            #     -
+            #       lm_type: bert
+            #       model_name: "bert-base-uncased"
+            #       gradient_checkpoint: true
+            #       node_types:
+            #         - n_0
+            #         - n_1
+            #     -
+            #       lm_type: bert
+            #       model_name: "allenai/scibert_scivocab_uncased"
+            #       gradient_checkpoint: true
+            #       node_types:
+            #         - n_2
+            lm_model = configuration['lm_model']
+            assert "node_lm_models" in lm_model, "node_lm_models must be provided"
+            # if node_lm_models is not defined, ignore the lm model
+            node_lm_models = lm_model['node_lm_models']
+            setattr(self, "_node_lm_configs", node_lm_models)
+
         # handle gnn config
-        lmgnn_family = configuration['gsf']
-        for family, param_family in lmgnn_family.items():
+        gnn_family = configuration['gsf']
+        for family, param_family in gnn_family.items():
             for key, val in param_family.items():
                 setattr(self, f"_{key}", val)
 
@@ -226,6 +250,81 @@ class GSConfig:
             return self._verbose
 
         return False
+
+    ###################### language model support #########################
+    @property
+    def lm_train_nodes(self):
+        """ Number of tunable LM model nodes
+        """
+        # pylint: disable=no-member
+        if hasattr(self, "_lm_train_nodes"):
+            assert self._lm_train_nodes >= -1, \
+                "Number of LM trainable nodes must larger or equal to -1." \
+                "0 means no LM trainable nodes" \
+                "-1 means all nodes are LM trainable nodes"
+            return self._lm_train_nodes
+
+        # By default, do not turn on co-training
+        return 0
+
+    @property
+    def lm_infer_batchszie(self):
+        """ Mini batch size used to do LM model inference
+        """
+        # pylint: disable=no-member
+        if hasattr(self, "_lm_infer_batchszie"):
+            assert self._lm_infer_batchszie > 0, \
+                "Batch size for LM model inference must larger than 0"
+            return self._lm_infer_batchszie
+
+        return 32
+
+    @property
+    def freeze_lm_encoder_epochs(self):
+        """ Number of epochs we will take to warmup a GNN model
+            before a fine-tuning LM model with GNN.
+        """
+        # pylint: disable=no-member
+        if hasattr(self, "_freeze_lm_encoder_epochs"):
+            assert self._freeze_lm_encoder_epochs >= 0, \
+                "Number of warmup epochs must be larger than or equal to 0"
+            return self._freeze_lm_encoder_epochs
+
+        return 0
+
+    def _check_lm_config(self, lm_config):
+        assert "lm_type" in lm_config, "lm_type (type of language model," \
+            "e.g., bert) must be provided for node_lm_models."
+        assert "model_name" in lm_config, "language model model_name must " \
+            "be provided for node_lm_models."
+        if "gradient_checkpoint" not in lm_config:
+            lm_config["gradient_checkpoint"] = False
+        assert "node_types" in lm_config, "node types must be provided for " \
+            "node_lm_models"
+        assert len(lm_config["node_types"]) >= 1, "number of node types " \
+            "must be larger than 1"
+
+    @property
+    def node_lm_configs(self):
+        """ check bert config
+        """
+        if hasattr(self, "_node_lm_configs"):
+            if self._node_lm_configs is None:
+                return None
+
+            # lm_config is not NOne
+            assert isinstance(self._node_lm_configs, list), \
+                "Node language model config is not None. It must be a list"
+            assert len(self._node_lm_configs) > 0, \
+                "Number of node language model config must larger than 0"
+
+            for lm_config in self._node_lm_configs:
+                self._check_lm_config(lm_config)
+
+            return self._node_lm_configs
+
+        # By default there is no node_lm_config
+        return None
 
     ###################### general gnn model related ######################
     @property
@@ -1187,7 +1286,6 @@ def _add_gsgnn_basic_args(parser):
             type=str,
             default=argparse.SUPPRESS,
             help="Folder path to save performance results of model evaluation.")
-
     return parser
 
 def _add_gnn_args(parser):
@@ -1311,6 +1409,17 @@ def _add_hyperparam_args(parser):
     group.add_argument("--enable-early-stop",
             type=bool, default=argparse.SUPPRESS,
             help='whether to enable early stopping by monitoring the validation loss')
+    return parser
+
+def _add_lm_model_args(parser):
+    group = parser.add_argument_group(title="lm model")
+    group.add_argument("--lm-train-nodes", type=int, default=argparse.SUPPRESS,
+            help="number of nodes used in LM model fine-tuning")
+    group.add_argument("--lm-infer-batchszie", type=int, default=argparse.SUPPRESS,
+            help="Batch size used in LM model inference")
+    group.add_argument("--freeze-lm-encoder-epochs", type=int, default=argparse.SUPPRESS,
+            help="Before fine-tuning LM model, how many epochs we will take "
+                 "to warmup a GNN model")
     return parser
 
 def _add_rgat_args(parser):

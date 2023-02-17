@@ -88,6 +88,8 @@ if __name__ == '__main__':
                                      retain_original_features=args.retain_original_features)
     elif args.dataset == 'movie-lens-100k':
         dataset = MovieLens100kNCDataset(args.filepath)
+    elif args.dataset == 'movie-lens-100k-text':
+        dataset = MovieLens100kNCDataset(args.filepath, use_text_feat=True)
     else:
         constructed_graph = True
         print("Loading user defined dataset " + str(args.dataset))

@@ -15,8 +15,6 @@ gsf:
     ip_config: /data/ip_list_p4.txt
     part_config: /data/mag-lsc-4p/mag-lsc.json
     verbose: false
-    gnn_warmup_epochs: 0
-    mixed_precision: false
     mp_opt_level: O2
     no_validation: false
     train_nodes: 10

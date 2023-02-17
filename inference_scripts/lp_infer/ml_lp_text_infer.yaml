@@ -1,13 +1,24 @@
 ---
 version: 1.0
+lm_model:
+  node_lm_models:
+    -
+      lm_type: bert
+      model_name: "bert-base-uncased"
+      gradient_checkpoint: true
+      node_types:
+        - movie
+        - user
 gsf:
   basic:
     backend: gloo
     num_gpus: 4
     ip_config: ip_list.txt
-    part_config: movielen_100k_train_val_1p_4t/movie-lens-100k.json
+    part_config: movielen_100k_text_lp_train_val_1p_4t/movie-lens-100k.json
     verbose: false
     debug: false
+  lm:
+    lm_infer_batchszie: 32
   gnn:
     model_encoder_type: rgcn
     fanout: "4"

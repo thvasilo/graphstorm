@@ -55,7 +55,10 @@ def main(args):
     dataloader = GSgnnNodeDataLoader(infer_data, infer_data.test_idxs, fanout=fanout,
                                      batch_size=config.eval_batch_size, device=device,
                                      train_task=False)
-
+    # Preparing input layer for training or inference.
+    # The input layer can pre-compute node features in the preparing step if needed.
+    # For example pre-compute all BERT embeddings
+    model.prepare_input_encoder(infer_data)
     infer.infer(dataloader, save_embed_path=config.save_embed_path,
                 save_predict_path=config.save_predict_path,
                 mini_batch_infer=config.mini_batch_infer)

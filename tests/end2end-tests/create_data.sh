@@ -25,11 +25,37 @@ python3 /$GS_HOME/tools/partition_graph.py --dataset movie-lens-100k \
 	--num_parts 1
 
 export PYTHONPATH=$GS_HOME/python/
+python3 /$GS_HOME/tools/partition_graph.py --dataset movie-lens-100k-text \
+	--filepath /data \
+	--predict_ntype movie \
+	--undirected \
+	--num_trainers_per_machine 4 \
+	--output movielen_100k_text_train_val_1p_4t \
+	--generate_new_node_split true \
+	--balance_train \
+	--balance_edges \
+	--num_parts 1
+
+# movielens link prediction
+export PYTHONPATH=$GS_HOME/python/
 python3 /$GS_HOME/tools/partition_graph_lp.py --dataset movie-lens-100k \
 	--filepath /data \
 	--predict_etype "user,rating,movie" \
 	--num_trainers_per_machine 4 \
 	--output movielen_100k_lp_train_val_1p_4t \
+	--balance_train \
+	--balance_edges \
+	--train_pct 0.1 \
+	--val_pct 0.1 \
+	--num_parts 1
+
+# movielens link prediction with text features
+export PYTHONPATH=$GS_HOME/python/
+python3 /$GS_HOME/tools/partition_graph_lp.py --dataset movie-lens-100k-text  \
+	--filepath /data \
+	--predict_etype "user,rating,movie" \
+	--num_trainers_per_machine 4 \
+	--output movielen_100k_text_lp_train_val_1p_4t \
 	--balance_train \
 	--balance_edges \
 	--train_pct 0.1 \
@@ -67,6 +93,22 @@ python3 /$GS_HOME/tools/partition_graph.py --dataset movie-lens-100k \
     --etask_type "classification" \
 	--num_trainers_per_machine 4 \
 	--output movielen_100k_ec_1p_4t \
+	--balance_train \
+	--balance_edges \
+	--generate_new_edge_split true \
+	--train_pct 0.1 \
+	--val_pct 0.1 \
+	--num_parts 1
+
+# Create data for edge classification with text features
+export PYTHONPATH=$GS_HOME/python/
+python3 /$GS_HOME/tools/partition_graph.py --dataset movie-lens-100k-text \
+	--filepath /data \
+    --elabel_fields "user,rating,movie:rate" \
+    --predict_etype "user,rating,movie" \
+    --etask_type "classification" \
+	--num_trainers_per_machine 4 \
+	--output movielen_100k_ec_1p_4t_text \
 	--balance_train \
 	--balance_edges \
 	--generate_new_edge_split true \
