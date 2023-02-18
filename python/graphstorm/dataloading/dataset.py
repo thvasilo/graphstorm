@@ -222,11 +222,14 @@ class GSgnnEdgeTrainData(GSgnnEdgeData):
     """
     def __init__(self, graph_name, part_config, train_etypes, eval_etypes=None,
                  label_field=None, node_feat_field=None, edge_feat_field=None):
-        assert isinstance(train_etypes, (tuple, list)), \
-                "The prediction etypes for training has to be a tuple or a list of tuples."
-        if isinstance(train_etypes, tuple):
-            train_etypes = [train_etypes]
-        self._train_etypes = train_etypes
+        if train_etypes is not None:
+            assert isinstance(train_etypes, (tuple, list)), \
+                    "The prediction etypes for training has to be a tuple or a list of tuples."
+            if isinstance(train_etypes, tuple):
+                train_etypes = [train_etypes]
+            self._train_etypes = train_etypes
+        else:
+            self._train_etypes = None
 
         if eval_etypes is not None:
             assert isinstance(eval_etypes, (tuple, list)), \
@@ -258,32 +261,39 @@ class GSgnnEdgeTrainData(GSgnnEdgeData):
         test_idxs = {}
         num_train = num_val = num_test = 0
         pb = g.get_partition_book()
+        if self.train_etypes is None:
+            self._train_etypes = g.canonical_etypes
         print(self.train_etypes)
         for canonical_etype in self.train_etypes:
-            etype = canonical_etype[1]
-            if 'train_mask' in g.edges[etype].data:
-                train_idx = dgl.distributed.edge_split(g.edges[etype].data['train_mask'],
-                                                       pb, etype=etype, force_even=True)
+            if 'train_mask' in g.edges[canonical_etype].data:
+                train_idx = dgl.distributed.edge_split(
+                    g.edges[canonical_etype].data['train_mask'],
+                    pb, etype=canonical_etype, force_even=True)
             else:
                 # If there are no training masks, we assume all edges can be used for training.
                 # Therefore, we use a more memory efficient way to split the edge list.
                 # TODO(zhengda) we need to split the edges properly to increase the data locality.
-                train_idx = split_full_edge_list(g, etype, get_rank())
+                train_idx = split_full_edge_list(g, canonical_etype, get_rank())
             num_train += len(train_idx)
             train_idxs[canonical_etype] = train_idx
 
+        # If eval_etypes is None, we use all edge types.
+        if self.eval_etypes is None:
+            self._eval_etypes = g.canonical_etypes
         for canonical_etype in self.eval_etypes:
             # user must provide validation mask
-            if 'val_mask' in g.edges[etype].data:
-                val_idx = dgl.distributed.edge_split(g.edges[etype].data['val_mask'],
-                                                     pb, etype=etype, force_even=True)
+            if 'val_mask' in g.edges[canonical_etype].data:
+                val_idx = dgl.distributed.edge_split(
+                    g.edges[canonical_etype].data['val_mask'],
+                    pb, etype=canonical_etype, force_even=True)
                 num_val += len(val_idx)
                 # If there are validation data globally, we should add them to the dict.
                 if dist_sum(len(val_idx)) > 0:
                     val_idxs[canonical_etype] = val_idx
-            if 'test_mask' in g.edges[etype].data:
-                test_idx = dgl.distributed.edge_split(g.edges[etype].data['test_mask'],
-                                                      pb, etype=etype, force_even=True)
+            if 'test_mask' in g.edges[canonical_etype].data:
+                test_idx = dgl.distributed.edge_split(
+                    g.edges[canonical_etype].data['test_mask'],
+                    pb, etype=canonical_etype, force_even=True)
                 num_test += len(test_idx)
                 # If there are test data globally, we should add them to the dict.
                 if dist_sum(len(test_idx)) > 0:
@@ -327,11 +337,14 @@ class GSgnnEdgeInferData(GSgnnEdgeData):
     """
     def __init__(self, graph_name, part_config, eval_etypes,
                  label_field=None, node_feat_field=None, edge_feat_field=None):
-        assert isinstance(eval_etypes, (tuple, list)), \
-                "The prediction etypes for evaluation has to be a tuple or a list of tuples."
-        if isinstance(eval_etypes, tuple):
-            eval_etypes = [eval_etypes]
-        self._eval_etypes = eval_etypes
+        if eval_etypes is not None:
+            assert isinstance(eval_etypes, (tuple, list)), \
+                    "The prediction etypes for evaluation has to be a tuple or a list of tuples."
+            if isinstance(eval_etypes, tuple):
+                eval_etypes = [eval_etypes]
+            self._eval_etypes = eval_etypes
+        else:
+            self._eval_etypes = None # Test on all edge types
 
         super(GSgnnEdgeInferData, self).__init__(graph_name, part_config, label_field,
                                                  node_feat_field, edge_feat_field)
@@ -348,15 +361,22 @@ class GSgnnEdgeInferData(GSgnnEdgeData):
         """
         pb = g.get_partition_book()
         test_idxs = {}
+        # If eval_etypes is None, we use all edge types.
+        if self.eval_etypes is None:
+            self._eval_etypes = g.canonical_etypes
         # test_mask exists
         for canonical_etype in self.eval_etypes:
-            etype = canonical_etype[1]
-            if 'test_mask' in g.edges[etype].data:
-                test_idx = dgl.distributed.edge_split(g.edges[etype].data['test_mask'],
-                                                      pb, etype=etype, force_even=True)
+            print(canonical_etype)
+            if 'test_mask' in g.edges[canonical_etype].data:
+                test_idx = dgl.distributed.edge_split(
+                    g.edges[canonical_etype].data['test_mask'],
+                    pb, etype=canonical_etype, force_even=True)
                 # If there are test data globally, we should add them to the dict.
                 if dist_sum(len(test_idx)) > 0:
                     test_idxs[canonical_etype] = test_idx
+            else:
+                print(f"WARNING: {canonical_etype} does not contains " \
+                      "test_mask, skip testing {canonical_etype}")
         self._test_idxs = test_idxs
 
     @property

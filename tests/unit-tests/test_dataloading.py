@@ -33,6 +33,7 @@ def test_GSgnnEdgeData():
                                       world_size=1)
 
     tr_etypes = [("n0", "r1", "n1"), ("n0", "r0", "n1")]
+    tr_single_etype = [("n0", "r1", "n1")]
     va_etypes = [("n0", "r1", "n1")]
     ts_etypes = [("n0", "r1", "n1")]
     with tempfile.TemporaryDirectory() as tmpdirname:
@@ -44,8 +45,19 @@ def test_GSgnnEdgeData():
                                      label_field='label')
         tr_data1 = GSgnnEdgeTrainData(graph_name='dummy', part_config=part_config,
                                       train_etypes=tr_etypes)
+        # pass train etypes as None
+        tr_data2 = GSgnnEdgeTrainData(graph_name='dummy', part_config=part_config,
+                                     train_etypes=None,
+                                     label_field='label')
+        # train etypes does not cover all etypes.
+        tr_data3 = GSgnnEdgeTrainData(graph_name='dummy', part_config=part_config,
+                                     train_etypes=tr_single_etype,
+                                     label_field='label')
         ev_data = GSgnnEdgeInferData(graph_name='dummy', part_config=part_config,
                                      eval_etypes=va_etypes)
+        # pass eval etypes as None
+        ev_data2 = GSgnnEdgeInferData(graph_name='dummy', part_config=part_config,
+                                      eval_etypes=None)
 
     # successful initialization with default setting
     assert tr_data.train_etypes == tr_etypes
@@ -53,6 +65,11 @@ def test_GSgnnEdgeData():
     assert tr_data1.train_etypes == tr_etypes
     assert tr_data1.eval_etypes == tr_etypes
     assert ev_data.eval_etypes == va_etypes
+    assert tr_data2.train_etypes == tr_data2.eval_etypes
+    assert tr_data2.train_etypes == dist_graph.canonical_etypes
+    assert tr_data3.train_etypes == tr_single_etype
+    assert tr_data3.eval_etypes == tr_single_etype
+    assert ev_data2.eval_etypes == dist_graph.canonical_etypes
 
     # sucessfully split train/val/test idxs
     assert len(tr_data.train_idxs) == len(tr_etypes)
@@ -77,6 +94,29 @@ def test_GSgnnEdgeData():
     assert len(ev_data.test_idxs) == len(va_etypes)
     for etype in va_etypes:
         assert th.all(ev_data.test_idxs[etype] == get_nonzero(dist_graph.edges[etype[1]].data['test_mask']))
+
+    # pass train etypes as None
+    assert len(tr_data2.train_idxs) == len(dist_graph.canonical_etypes)
+    for etype in tr_etypes:
+        assert th.all(tr_data2.train_idxs[etype] == get_nonzero(dist_graph.edges[etype[1]].data['train_mask']))
+    for etype in tr_etypes:
+        assert th.all(tr_data2.val_idxs[etype] == get_nonzero(dist_graph.edges[etype[1]].data['val_mask']))
+    for etype in tr_etypes:
+        assert th.all(tr_data2.test_idxs[etype] == get_nonzero(dist_graph.edges[etype[1]].data['test_mask']))
+
+    # train etypes does not cover all etypes.
+    assert len(tr_data3.train_idxs) == len(tr_single_etype)
+    for etype in tr_single_etype:
+        assert th.all(tr_data3.train_idxs[etype] == get_nonzero(dist_graph.edges[etype[1]].data['train_mask']))
+    for etype in tr_single_etype:
+        assert th.all(tr_data3.val_idxs[etype] == get_nonzero(dist_graph.edges[etype[1]].data['val_mask']))
+    for etype in tr_single_etype:
+        assert th.all(tr_data3.test_idxs[etype] == get_nonzero(dist_graph.edges[etype[1]].data['test_mask']))
+
+    # pass eval etypes as None
+    assert len(ev_data2.test_idxs) == 2
+    for etype in dist_graph.canonical_etypes:
+        assert th.all(ev_data2.test_idxs[etype] == get_nonzero(dist_graph.edges[etype[1]].data['test_mask']))
 
     labels = tr_data.get_labels({('n0', 'r1', 'n1'): [0, 1]})
     assert len(labels.keys()) == 1
