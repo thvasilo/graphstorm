@@ -214,7 +214,9 @@ def create_builtin_lp_gnn_model(g, config, train_task):
     """
     model = GSgnnLinkPredictionModel(config.alpha_l2norm)
     set_gnn_encoder(model, g, config, train_task)
-    num_train_etype = len(config.train_etype)
+    num_train_etype = len(config.train_etype) \
+        if config.train_etype is not None \
+        else len(g.canonical_etypes) # train_etype is None, every etype is used for training
     # For backword compatibility, we add this check.
     # if train etype is 1, There is no need to use DistMult
     assert num_train_etype > 1 or config.use_dot_product, \
