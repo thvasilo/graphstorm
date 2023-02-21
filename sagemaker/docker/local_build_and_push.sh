@@ -58,9 +58,11 @@ graphstorm_package='.'
 source_code_prefix="$graphstorm_package/code"
 
 source_dockerfile="sagemaker/docker/${version}/Dockerfile"
+build_artifacts="sagemaker/docker/build_artifacts"
 
 echo "Copying source code files from ${source_code_prefix} and dockerfile from ${source_dockerfile} to container directory"
 cp -r $source_code_prefix container
+cp -r $build_artifacts container
 rsync -r $dgl_package container --exclude .git --exclude third_party
 cp $source_dockerfile container/Dockerfile
 

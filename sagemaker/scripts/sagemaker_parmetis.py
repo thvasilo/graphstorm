@@ -3,6 +3,7 @@
 
 import os
 import json
+import logging
 import sys
 import queue
 import socket
@@ -73,7 +74,7 @@ def wait_for_preprocess_done(master_sock):
     msg = master_sock.recv(20)
     msg = msg.decode()
     if msg != "PreprocessDone":
-        raise RuntimeError("wait for Preprocess Error detected")
+        raise RuntimeError(f"wait for Preprocess Error detected, msg: {msg}")
 
 def broadcast_parmetis_done(client_list, world_size, success=True):
     """ Notify each worker process the parmetis process is done
@@ -102,7 +103,7 @@ def wait_for_parmetis_done(master_sock):
     msg = master_sock.recv(20)
     msg = msg.decode()
     if msg != "ParmetisDone":
-        raise RuntimeError("Wait for Parmetis Done Error detected")
+        raise RuntimeError(f"Wait for Parmetis Done Error detected, msg: {msg}")
 
 def launch_preprocess(num_parts, ip_list, input_data_path,
     meta_data_config, output_path, state_q):
@@ -131,7 +132,8 @@ def launch_preprocess(num_parts, ip_list, input_data_path,
         "--mca", "orte_base_help_aggregate", "0",
         "/opt/conda/bin/python3", f"{DGL_TOOL_PATH}/distpartitioning/parmetis_preprocess.py",
         "--schema_file", f"{meta_data_config}",
-        "--output_dir", f"{output_path}"]
+        "--output_dir", f"{output_path}",
+        "--input_dir", input_data_path]
 
     print(f"RUN {launch_cmd}")
     # launch preprocess task
@@ -246,20 +248,23 @@ def launch_build_dglgraph(input_data_path, partitions_dir, ip_list, output_path,
     time.sleep(0.2)
     return thread
 
-def download_graph(graph_data_s3, metadata_filename, world_size,
-    local_rank, local_path, sagemaker_session):
+
+def download_graph(graph_data_s3, graph_config, world_size,
+        local_rank, local_path, sagemaker_session):
     """ download graph structure data
 
     Parameters
     ----------
     graph_data_s3: str
         S3 uri storing the partitioned graph data
-    metadata_filename: str
-        File name of metadata config
+    graph_config: dict
+        metadata config
     world_size: int
         Size of the cluster
     local_rank: str
         Path to store graph data
+    local_path: str
+        directory path under which the data will be downloaded
     sagemaker_session: sagemaker.session.Session
         sagemaker_session to run download
 
@@ -267,32 +272,28 @@ def download_graph(graph_data_s3, metadata_filename, world_size,
     ------
     local_path: str
         Local path to downloaded graph data
-    local_config: str
-        Local path to graph metadata config
     """
-    local_path = os.path.join(local_path, "input_graph")
-    graph_config = os.path.join(graph_data_s3, metadata_filename)
-    local_config = os.path.join(local_path, metadata_filename)
-    print(f"download {graph_config} into {local_config}")
-    download_data_from_s3(graph_config, local_path,
-        sagemaker_session=sagemaker_session)
 
-    with open(local_config, encoding='utf-8') as f:
-        graph_config = json.load(f)
-
-        # download edge info
-        edges = graph_config["edges"]
-        for etype, edge_data in edges.items():
-            print(f"Downloading edges of {etype}")
-            for i, efile in enumerate(edge_data["data"]):
-                if i % world_size == local_rank:
-                    file_s3_path = os.path.join(graph_data_s3, efile.strip('./'))
-                    print(f"Download {efile} from {file_s3_path}")
-                    local_dir = local_path \
-                        if len(efile.rpartition('/')) <= 1 else \
-                        os.path.join(local_path, efile.rpartition('/')[0])
-                    download_data_from_s3(file_s3_path, local_dir,
-                        sagemaker_session=sagemaker_session)
+    # download edge info
+    edges = graph_config["edges"]
+    for etype, edge_data in edges.items():
+        print(f"Downloading edges of {etype}")
+        edge_file_list = edge_data["data"]
+        if len(edge_file_list) % world_size != 0:
+            raise RuntimeError(f"Edge file count ({len(edge_file_list)})"
+                f" should be a multiple of number of partitions {world_size}")
+        if len(edge_file_list) < world_size:
+            raise RuntimeError(f"Edge file count ({len(edge_file_list)})"
+                f" should be more or equal to the of number of partitions {world_size}")
+        for i, efile in enumerate(edge_file_list):
+            if i % world_size == local_rank:
+                file_s3_path = os.path.join(graph_data_s3, efile.strip('./'))
+                print(f"Download {efile} from {file_s3_path}")
+                local_dir = local_path \
+                    if len(efile.rpartition('/')) <= 1 else \
+                    os.path.join(local_path, efile.rpartition('/')[0])
+                download_data_from_s3(file_s3_path, local_dir,
+                    sagemaker_session=sagemaker_session)
 
         # download node feature
         node_data = graph_config["node_data"]
@@ -302,9 +303,12 @@ def download_graph(graph_data_s3, metadata_filename, world_size,
                 # we follow the logic in DGL:
                 # tools/distpartitioning/dataset_utils.py: L268
                 num_files = len(feat_data["data"])
+                if num_files < world_size:
+                    raise RuntimeError(f"Node feature file count ({num_files})"
+                        f" should be more or equal to the of number of partitions {world_size}")
                 read_list = np.array_split(np.arange(num_files), world_size)
-                print(read_list)
-                print(read_list[local_rank].tolist())
+                logging.debug(read_list)
+                logging.debug(read_list[local_rank].tolist())
                 for i in read_list[local_rank].tolist():
                     nf_file = feat_data["data"][i]
                     file_s3_path = os.path.join(graph_data_s3, nf_file.strip('./'))
@@ -317,15 +321,18 @@ def download_graph(graph_data_s3, metadata_filename, world_size,
 
         # download edge feature
         edge_data = graph_config["edge_data"]
-        for etype, edata in edge_data.items():
+        for e_feat_type, edata in edge_data.items():
             for feat_name, feat_data in edata.items():
-                print(f"Downloading node feature {feat_name} of {etype}")
+                print(f"Downloading edge feature {feat_name} of {e_feat_type}")
                 # we follow the logic in DGL:
                 # tools/distpartitioning/dataset_utils.py: L268
                 num_files = len(feat_data["data"])
+                if num_files < world_size:
+                    raise RuntimeError(f"Edge feature file count ({num_files})"
+                        f" should be more or equal to the of number of partitions ({world_size})")
                 read_list = np.array_split(np.arange(num_files), world_size)
-                print(read_list)
-                print(read_list[local_rank].tolist())
+                logging.debug(read_list)
+                logging.debug(read_list[local_rank].tolist())
 
                 for i in read_list[local_rank].tolist():
                     ef_file = feat_data["data"][i]
@@ -337,7 +344,7 @@ def download_graph(graph_data_s3, metadata_filename, world_size,
                     download_data_from_s3(file_s3_path, local_dir,
                         sagemaker_session=sagemaker_session)
 
-    return local_path, local_config
+    return local_path
 
 def download_data_from_s3(input_s3, local_data_path, sagemaker_session):
     """ Download intermediate data info into S3
@@ -355,11 +362,10 @@ def download_data_from_s3(input_s3, local_data_path, sagemaker_session):
     try:
         S3Downloader.download(input_s3,
             local_data_path, sagemaker_session=sagemaker_session)
-    except Exception: # pylint: disable=broad-except
-        print(f"Can not download {input_s3}.")
-        raise RuntimeError(f"Can not download {input_s3}.")
+    except Exception as e: # pylint: disable=broad-except
+        raise RuntimeError(f"Error while downloading {input_s3}: {e}")
 
-def upload_file_to_s3(data_path_s3_path, local_data_path, sagemaker_session):
+def upload_file_to_s3(data_path_s3_path, local_data_path, sagemaker_session=None):
     """ Upload intermediate data info into S3
 
     Parameters
@@ -372,12 +378,14 @@ def upload_file_to_s3(data_path_s3_path, local_data_path, sagemaker_session):
         sagemaker_session to run upload
     """
     print(f"upload {local_data_path} into {data_path_s3_path}")
+    if not sagemaker_session:
+        boto_session = boto3.Session(region_name=os.environ['AWS_REGION'])
+        sagemaker_session = sagemaker.Session(boto_session)
     try:
         ret = S3Uploader.upload(local_data_path, data_path_s3_path,
             sagemaker_session=sagemaker_session)
-    except Exception: # pylint: disable=broad-except
-        print(f"Can not upload data into {data_path_s3_path}")
-        raise RuntimeError(f"Can not upload data into {data_path_s3_path}")
+    except Exception as e: # pylint: disable=broad-except
+        raise RuntimeError(f"Error uploading data to {data_path_s3_path}: {e}")
     return ret
 
 def parse_partition_args():
@@ -385,7 +393,6 @@ def parse_partition_args():
     """
     parser = argparse.ArgumentParser(description='gs sagemaker train pipeline')
 
-    parser.add_argument("--graph-name", type=str, help="Graph name")
     parser.add_argument("--graph-data-s3", type=str,
         help="S3 location of input graph")
     parser.add_argument("--num-parts", type=int, help="Number of partitions")
@@ -393,34 +400,46 @@ def parse_partition_args():
         help="S3 location to store the partitioned graph")
     parser.add_argument("--metadata-filename", type=str,
         default="metadata.json", help="file name of metadata config file")
+    parser.add_argument('--log-level', default='INFO')
 
     return parser
 
 def main():
+    # TODO: Wrap logic in class so we can have persistent state (rank etc) to ease function calls
     """ main logic
     """
+
     for key, val in os.environ.items():
-        print(f"{key}: {val}")
+        logging.debug("%s: %s", key, val)
 
     # start the ssh server
     subprocess.run(["service", "ssh", "start"], check=True)
 
-    tmp_data_path = "/opt/ml/"
+    tmp_data_path = "/tmp/"
     parser = parse_partition_args()
     args = parser.parse_args()
+
+    graph_data_s3 = args.graph_data_s3
+    num_parts = args.num_parts
+    output_s3 = args.output_data_s3
+    metadata_filename = args.metadata_filename
+
+    logging.basicConfig(level=args.log_level.upper())
     sm_env = json.loads(os.environ['SM_TRAINING_ENV'])
     hosts = sm_env['hosts']
     current_host = sm_env['current_host']
     world_size = len(hosts)
     os.environ['WORLD_SIZE'] = str(world_size)
     host_rank = hosts.index(current_host)
-    assert args.graph_name is not None, "Graph name must be provided"
+
+    boto_session = boto3.session.Session(region_name=os.environ['AWS_REGION'])
+    sagemaker_session = sagemaker.session.Session(boto_session=boto_session)
 
     try:
         for host in hosts:
             print(f"The {host} IP is {socket.gethostbyname(host)}")
-    except:
-        raise RuntimeError(f"Can not get host name of {hosts}")
+    except Exception as e: # pylint: disable=broad-except
+        raise RuntimeError(f"Can not get host name of {hosts}: {e}")
 
     master_addr = os.environ['MASTER_ADDR']
     # sync with all instances in the cluster
@@ -454,23 +473,29 @@ def main():
             f.write(f"{socket.gethostbyname(host)}\n")
             ip_list.append(socket.gethostbyname(host))
 
-    graph_name = args.graph_name
-    graph_data_s3 = args.graph_data_s3
-    num_parts = args.num_parts
-    output_s3 = args.output_data_s3
-    metadata_filename = args.metadata_filename
+    graph_data_s3_no_trailing = graph_data_s3[:-1] if graph_data_s3.endswith('/') else graph_data_s3
+    graph_config_s3_path = f"{graph_data_s3_no_trailing}/{metadata_filename}"
+    meta_info_file = os.path.join(tmp_data_path, metadata_filename)
 
-    boto_session = boto3.session.Session(region_name=os.environ['AWS_REGION'])
-    sagemaker_session = sagemaker.session.Session(boto_session=boto_session)
-    graph_data_path, meta_info_file = download_graph(graph_data_s3,
-        metadata_filename,
+    if not os.path.exists(meta_info_file):
+        print(f"Downloading metadata file from {graph_config_s3_path} into {meta_info_file}")
+        download_data_from_s3(graph_config_s3_path, tmp_data_path,
+            sagemaker_session=sagemaker_session)
+
+    with open(meta_info_file, 'r') as f: # pylint: disable=unspecified-encoding
+        graph_config = json.load(f)
+        graph_name = graph_config["graph_name"]
+
+    graph_data_path = download_graph(
+        graph_data_s3,
+        graph_config,
         world_size,
         host_rank,
         tmp_data_path,
         sagemaker_session)
 
     err_code = 0
-    if host_rank == 0:
+    if host_rank == 0:  # Leader tasks
         # To get which net device to use for MPI communication
         def get_ifname():
             nics = psutil.net_if_addrs()
@@ -509,7 +534,7 @@ def main():
             #
             # TODO(xinagsx): Allow skiping the preprocess step and
             # resuming metis_input to do partition.
-            metis_input_s3 = os.path.join(graph_data_s3, "metis_input")
+            metis_input_s3 = os.path.join(output_s3, "metis_input")
             upload_file_to_s3(metis_input_s3, metis_input_path, sagemaker_session)
 
             # Upload <graph_name>_stats.txt
@@ -558,7 +583,7 @@ def main():
 
             # parmetis done
             # Upload per node type partition-id into S3
-            partition_input_s3 = os.path.join(graph_data_s3, "partition")
+            partition_input_s3 = os.path.join(output_s3, "partition")
             upload_file_to_s3(partition_input_s3, partition_dir, sagemaker_session)
             broadcast_parmetis_done(client_list, world_size)
 
@@ -604,18 +629,16 @@ def main():
             utils.terminate_workers(client_list, world_size, task_end)
         print("Master End")
         if err_code != -1:
+            s3_dglgraph_output = os.path.join(output_s3, "dist_graph")
             upload_file_to_s3(output_s3, dglgraph_output, sagemaker_session)
-            # clean up the downloaded graph and the generated graph
-            utils.remove_data(graph_data_path)
-            utils.remove_data(dglgraph_output)
-    else:
+    else:  # Worker tasks
         utils.barrier(sock)
 
         def worker_prepare_partition_graph():
             wait_for_preprocess_done(sock)
 
             # download parmetis_nfiles.txt and parmetis_efiles.txt
-            metis_input_s3 = os.path.join(graph_data_s3, "metis_input")
+            metis_input_s3 = os.path.join(output_s3, "metis_input")
             metis_input_path = os.path.join(tmp_data_path, "metis_input")
             print(f"{host_rank} {os.listdir(metis_input_path)}")
             download_data_from_s3(os.path.join(metis_input_s3, "parmetis_nfiles.txt"),
@@ -643,7 +666,7 @@ def main():
             # wait for parmetis finish
             wait_for_parmetis_done(sock)
 
-            partition_input_s3 = os.path.join(graph_data_s3, "partition")
+            partition_input_s3 = os.path.join(output_s3, "partition")
             partition_dir = os.path.join(graph_data_path, "partition")
             download_data_from_s3(partition_input_s3, partition_dir, sagemaker_session)
 
@@ -665,11 +688,9 @@ def main():
         utils.wait_for_exit(sock)
         if err_code != -1:
             dglgraph_output = os.path.join(tmp_data_path, "dist_graph")
-            upload_file_to_s3(output_s3, dglgraph_output, sagemaker_session)
-            # clean up the downloaded graph and the generated graph
-            utils.remove_data(dglgraph_output)
+            s3_dglgraph_output = os.path.join(output_s3, "dist_graph")
+            upload_file_to_s3(s3_dglgraph_output, dglgraph_output, sagemaker_session)
             print("Worker End")
-        utils.remove_data(graph_data_path)
 
     sock.close()
     if err_code != 0:

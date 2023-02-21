@@ -24,7 +24,7 @@ def barrier_master(client_list, world_size):
     for rank in range(1, world_size):
         msg = client_list[rank].recv(8)
         msg = msg.decode()
-        assert msg == "sync_ack"
+        assert msg == "sync_ack", f"Rank {rank} did not send 'sync_ack', got msg {msg}"
 
     for rank in range(1, world_size):
         client_list[rank].send(b"synced")
@@ -44,13 +44,13 @@ def barrier(master_sock):
     """
     msg = master_sock.recv(8)
     msg = msg.decode()
-    assert msg == "sync"
+    assert msg == "sync", f"Incorrect message received from master: {msg}"
 
     master_sock.send(b"sync_ack")
 
     msg = master_sock.recv(8)
     msg = msg.decode()
-    assert msg == "synced"
+    assert msg == "synced", f"Incorrect message received from master: {msg}"
 
     master_sock.send(b"synced_ack")
 
