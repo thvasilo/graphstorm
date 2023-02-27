@@ -8,7 +8,7 @@ from torch import nn
 
 from transformers import BertModel, BertConfig
 
-from .lm_model import TOKEN_IDX, ATT_MASK_IDX
+from .lm_model import TOKEN_IDX, ATT_MASK_IDX, TOKEN_TID_IDX
 from .lm_model import GSFLanguageModelWrapper
 
 def load_hfbert_model(bert_configs):
@@ -56,20 +56,21 @@ class HFBertWrapper(GSFLanguageModelWrapper):
             else:
                 self.num_params = np.sum([param.numel() for param in lm_model.encoder.parameters()])
 
-    def _forward(self, input_ids, attention_masks):
+    def _forward(self, input_ids, attention_masks, token_tids=None):
         outputs = self.lm_model(input_ids,
-                                attention_mask=attention_masks)
+                                attention_mask=attention_masks,
+                                token_type_ids=token_tids)
         if isinstance(outputs, dict):
             out_emb = outputs['pooler_output']
         else:
             out_emb = outputs.pooler_output
         return out_emb
 
-    def _train_forward(self, input_ids, attention_masks):
+    def _train_forward(self, input_ids, attention_masks, token_tids=None):
         if self.profile:
             t_train_start = time.time()
 
-        out_emb = self._forward(input_ids, attention_masks)
+        out_emb = self._forward(input_ids, attention_masks, token_tids)
 
         if self.profile:
             th.cuda.synchronize(device=self.lm_model.device)
@@ -79,7 +80,7 @@ class HFBertWrapper(GSFLanguageModelWrapper):
             self.train_flops.append(train_num_flops / (time.time() - t_train_start))
         return out_emb
 
-    def _static_forward(self, input_ids, attention_masks):
+    def _static_forward(self, input_ids, attention_masks, token_tids=None):
         if self.profile:
             static_num_flops = 0
             t_static_start = time.time()
@@ -90,10 +91,12 @@ class HFBertWrapper(GSFLanguageModelWrapper):
 
         input_ids_list = th.split(input_ids, self.infer_bs, dim=0)
         attention_mask_list = th.split(attention_masks, self.infer_bs, dim=0)
+        token_tids_list = th.split(token_tids, self.infer_bs, dim=0) \
+            if token_tids is not None else [None] * len(input_ids_list)
         static_out_embs = []
-        for static_iid, static_att_mask \
-            in zip(input_ids_list, attention_mask_list):
-            out_emb = self._forward(static_iid, static_att_mask)
+        for static_iid, static_att_mask, static_token_tid \
+            in zip(input_ids_list, attention_mask_list, token_tids_list):
+            out_emb = self._forward(static_iid, static_att_mask, static_token_tid)
             static_out_embs.append(out_emb)
 
             if self.profile:
@@ -133,6 +136,7 @@ class HFBertWrapper(GSFLanguageModelWrapper):
 
         input_ids = []
         attention_masks = []
+        token_tids = []
         dev = next(self.lm_model.parameters()).device
         input_id_lens = []
 
@@ -150,18 +154,28 @@ class HFBertWrapper(GSFLanguageModelWrapper):
                 attention_mask = att_mask.reshape((1, -1)) < attention_mask.reshape((-1, 1))
             input_ids.append(input_id)
             attention_masks.append(attention_mask)
+            if TOKEN_TID_IDX in input_lm_feats[ntype]:
+                token_tid = input_lm_feats[ntype][TOKEN_TID_IDX].to(dev)
+                token_tids.append(token_tid)
 
         input_ids = th.cat(input_ids, dim=0)
         attention_masks = th.cat(attention_masks, dim=0)
+        if len(token_tids) > 0:
+            token_tids = th.cat(token_tids, dim=0)
+            assert input_ids.shape[0] == token_tids.shape[0]
+        else:
+            token_tids = None
 
         if num_train == 0: # do static bert
             with th.no_grad():
                 text_embs = self._static_forward(input_ids,
-                                                attention_masks)
+                                                attention_masks,
+                                                token_tids)
         elif num_train == -1 or num_train > input_ids.shape[0]:
             # All nodes are used for training
             text_embs = self._train_forward(input_ids,
-                                            attention_masks)
+                                            attention_masks,
+                                            token_tids)
         else: # randomly sample num_train nodes for training
             num_texts = input_ids.shape[0]
             text_embs = th.empty((num_texts, self.feat_size), dtype=th.float32, device=dev)
@@ -169,8 +183,11 @@ class HFBertWrapper(GSFLanguageModelWrapper):
             train_idx = th.randint(num_texts, (num_train,), device=dev)
             train_input_ids = input_ids[train_idx]
             train_attention_masks = attention_masks[train_idx]
+            train_token_tids = token_tids[train_idx] \
+                if token_tids is not None else None
             train_out_embs = self._train_forward(train_input_ids,
-                                                 train_attention_masks)
+                                                 train_attention_masks,
+                                                 train_token_tids)
             text_embs[train_idx] = train_out_embs.type(th.float32)
 
             with th.no_grad():
@@ -178,8 +195,11 @@ class HFBertWrapper(GSFLanguageModelWrapper):
                 static_idx[train_idx] = False
                 static_input_ids = input_ids[static_idx]
                 static_attention_masks = attention_masks[static_idx]
+                static_token_tids = token_tids[static_idx] \
+                    if token_tids is not None else None
                 static_out_embs = self._static_forward(static_input_ids,
-                                                    static_attention_masks)
+                                                       static_attention_masks,
+                                                       static_token_tids)
                 text_embs[static_idx] = static_out_embs.type(th.float32)
 
         offset = 0
