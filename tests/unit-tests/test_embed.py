@@ -183,7 +183,7 @@ def create_lm_graph():
     feat_size = get_feat_size(g, {'n0' : ['feat']})
     input_text = ["Hello world!"]
     tokenizer = AutoTokenizer.from_pretrained(bert_model_name)
-    input_ids, valid_len, attention_mask = \
+    input_ids, valid_len, attention_mask, _ = \
         create_tokens(tokenizer=tokenizer,
                       input_text=input_text,
                       max_seq_length=max_seq_length,
@@ -289,7 +289,7 @@ def test_lm_embed_warmup():
     feat_size = get_feat_size(g, {'n0' : ['feat']})
     input_text = ["Hello world!"]
     tokenizer = AutoTokenizer.from_pretrained(bert_model_name)
-    input_ids, valid_len, attention_mask = \
+    input_ids, valid_len, attention_mask, _ = \
         create_tokens(tokenizer=tokenizer,
                       input_text=input_text,
                       max_seq_length=max_seq_length,
