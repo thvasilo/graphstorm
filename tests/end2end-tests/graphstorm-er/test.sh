@@ -5,7 +5,7 @@ service ssh restart
 DGL_HOME=/root/dgl
 GS_HOME=$(pwd)
 NUM_TRAINERS=1
-export PYTHONPATH=$GS_HOME/src/
+export PYTHONPATH=$GS_HOME/python/
 cd $GS_HOME/training_scripts/gsgnn_ep
 
 echo "127.0.0.1" > ip_list.txt

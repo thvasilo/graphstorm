@@ -13,10 +13,8 @@ import argparse
 from threading import Thread, Event
 import sys
 import queue
-import utils
 
 import boto3
-import sagemaker
 
 from graphstorm.config.config import SUPPORTED_TASKS
 from graphstorm.config.config import BUILTIN_TASK_NODE_CLASSIFICATION
@@ -25,6 +23,8 @@ from graphstorm.config.config import BUILTIN_TASK_EDGE_CLASSIFICATION
 from graphstorm.config.config import BUILTIN_TASK_EDGE_REGRESSION
 from graphstorm.config.config import BUILTIN_TASK_LINK_PREDICTION
 
+import utils
+import sagemaker
 
 def launch_infer_task(task_type, num_gpus, graph_config,
     load_model_path, save_emb_path, ip_list, enable_bert,

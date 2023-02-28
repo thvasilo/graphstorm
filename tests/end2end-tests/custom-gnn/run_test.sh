@@ -3,7 +3,7 @@
 service ssh start
 
 GSF_HOME=$(pwd)
-export PYTHONPATH=${GSF_HOME}/src/
+export PYTHONPATH=${GSF_HOME}/python/
 PART_CONFIG=/data/movielen_100k_train_val_1p_4t/movie-lens-100k.json
 LAUNCH_PATH=~/dgl/tools/launch.py
 
