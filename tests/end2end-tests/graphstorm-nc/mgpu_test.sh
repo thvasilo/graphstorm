@@ -6,7 +6,7 @@ DGL_HOME=/root/dgl
 GS_HOME=$(pwd)
 NUM_TRAINERS=4
 NUM_INFERs=2
-export PYTHONPATH=$GS_HOME/src/
+export PYTHONPATH=$GS_HOME/python/
 cd $GS_HOME/training_scripts/gsgnn_np
 echo "127.0.0.1" > ip_list.txt
 cd $GS_HOME/inference_scripts/np_infer

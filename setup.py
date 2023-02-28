@@ -20,7 +20,7 @@ def find_version(*file_paths):
     raise RuntimeError("Unable to find version string.")
 
 
-VERSION = find_version('src', 'graphstorm', '__init__.py')
+VERSION = find_version('python', 'graphstorm', '__init__.py')
 
 if VERSION.endswith('dev'):
     VERSION = VERSION + datetime.today().strftime('%Y%m%d')
@@ -52,10 +52,10 @@ setup(
     license='Apache-2.0',
 
     # Package info
-    packages=find_packages(where="src", exclude=(
+    packages=find_packages(where="python", exclude=(
         'tests',
     )),
-    package_dir={"": "src"},
+    package_dir={"": "python"},
     package_data={'': [os.path.join('datasets', 'dataset_checksums', '*.txt')]},
     zip_safe=True,
     include_package_data=True,

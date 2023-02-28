@@ -13,9 +13,8 @@ pytest:
   tags:
     - gpu
   script:
-    - python3 -m pip install pytest
-    - python3 -m pip install hatchling
     - FORCE_CUDA=1 python3 -m pip install -e '.[test]'  --no-build-isolation
+    - python3 -m pip install pytest
     - sh ./tests/unit-tests/prepare_test_data.sh
     - export NCCL_IB_DISABLE=1; export NCCL_SHM_DISABLE=1; NCCL_NET=Socket NCCL_DEBUG=INFO python3 -m pytest ./tests/unit-tests -s
 
@@ -25,18 +24,16 @@ lint:
     - gpu
   script:
     - python3 -m pip install --upgrade prospector pip
-    - python3 -m pip install pytest
-    - python3 -m pip install hatchling
     - FORCE_CUDA=1 python3 -m pip install -e '.[test]'  --no-build-isolation
-    - pylint --rcfile=./tests/lint/pylintrc ./src/graphstorm/data/*.py
-    - pylint --rcfile=./tests/lint/pylintrc ./src/graphstorm/dataloading/
-    - pylint --rcfile=./tests/lint/pylintrc ./src/graphstorm/config/
-    - pylint --rcfile=./tests/lint/pylintrc ./src/graphstorm/eval/
-    - pylint --rcfile=./tests/lint/pylintrc ./src/graphstorm/model/
-    - pylint --rcfile=./tests/lint/pylintrc ./src/graphstorm/trainer/
-    - pylint --rcfile=./tests/lint/pylintrc ./src/graphstorm/inference/
-    - pylint --rcfile=./tests/lint/pylintrc ./src/graphstorm/tracker/
-    - pylint --rcfile=./tests/lint/pylintrc ./src/graphstorm/utils.py
+    - pylint --rcfile=./tests/lint/pylintrc ./python/graphstorm/data/*.py
+    - pylint --rcfile=./tests/lint/pylintrc ./python/graphstorm/dataloading/
+    - pylint --rcfile=./tests/lint/pylintrc ./python/graphstorm/config/
+    - pylint --rcfile=./tests/lint/pylintrc ./python/graphstorm/eval/
+    - pylint --rcfile=./tests/lint/pylintrc ./python/graphstorm/model/
+    - pylint --rcfile=./tests/lint/pylintrc ./python/graphstorm/trainer/
+    - pylint --rcfile=./tests/lint/pylintrc ./python/graphstorm/inference/
+    - pylint --rcfile=./tests/lint/pylintrc ./python/graphstorm/tracker/
+    - pylint --rcfile=./tests/lint/pylintrc ./python/graphstorm/utils.py
     - pylint --rcfile=./tests/lint/pylintrc ./sagemaker/launch_train.py
     - pylint --rcfile=./tests/lint/pylintrc ./sagemaker/scripts/*.py
 
