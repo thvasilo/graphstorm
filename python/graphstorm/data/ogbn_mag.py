@@ -1,6 +1,5 @@
 """GraphStorm dataset that wrap the OGB MAG dataset
 """
-import argparse
 import os
 import dgl
 import torch as th
@@ -202,14 +201,3 @@ class OGBMAGTextFeatDataset(GSgnnDataset):
         """The edge type to be predicted, which is 'writes' in the MAG dataset
         """
         return self._target_etype
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='query-asin')
-    parser.add_argument("--filepath", type=str, default=None)
-    parser.add_argument("--savepath", type=str, default=None)
-    parser.add_argument("--edge_pct", type=float, default=1)
-    args = parser.parse_args()
-    # only for test
-    dataset = OGBMAGTextFeatDataset(args.filepath,
-                                    edge_pct=args.edge_pct)
-    dataset.save_graphs(args.savepath)
