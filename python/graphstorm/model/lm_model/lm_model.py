@@ -6,7 +6,7 @@ import numpy as np
 from torch import nn
 
 TOKEN_IDX = 'input_ids'
-VALID_LEN_IDX = 'valid_len'
+VALID_LEN = 'valid_len'
 ATT_MASK_IDX = 'attention_mask'
 TOKEN_TID_IDX = 'token_type_ids'
 

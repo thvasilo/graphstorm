@@ -101,7 +101,7 @@ class GSgnnLinkPredictionTrainer(GSgnnTrainer):
 
                 t2 = time.time()
                 # TODO(zhengda) we don't support edge features for now.
-                loss = model(blocks, pos_graph, neg_graph,
+                loss = model(input_nodes, blocks, pos_graph, neg_graph,
                              input_feats, None, epoch, total_steps)
 
                 t3 = time.time()

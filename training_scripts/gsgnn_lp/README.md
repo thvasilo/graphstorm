@@ -9,7 +9,7 @@ $ GS_HOME=/graph-storm
 $ export PYTHONPATH=$GS_HOME/python/
 $ cd $GS_HOME/training_scripts/gsgnn_lp
 $ aws s3 cp --recursive s3://graphstorm-example/arxiv/ogbn-arxiv-raw/ ogbn-arxiv-raw/
-$ python3 python3 -u $GS_HOME/tools/partition_graph_lp.py --dataset ogbn-arxiv --filepath ogbn-arxiv-raw --num_parts 2 --num_trainers_per_machine 4 --output ogb_arxiv_train_val_2p_4t
+$ python3 -u $GS_HOME/tools/partition_graph_lp.py --dataset ogbn-arxiv --filepath ogbn-arxiv-raw --num_parts 1 --num_trainers_per_machine 4 --output ogb_arxiv_train_val_1p_4t --retain_original_features False
 ```
 
 The output file is ogb_arxiv_train_val_1p_4t/. It contains a partitioned DGLGraph with a signle partition.
@@ -17,6 +17,19 @@ The output file is ogb_arxiv_train_val_1p_4t/. It contains a partitioned DGLGrap
 ## Training
 After copying the ogb_arxiv_train_val_1p_4t folder into current location (under gsgnn_lp), We can launch the training task.
 
+### Graph aware pure language model finetuning.
+```
+$ DGL_HOME=/fsx-dev/xiangsx/home/workspace/dgl/dgl
+$ python3 $DGL_HOME/tools/launch.py \
+    --workspace $GS_HOME/training_scripts/gsgnn_lp \
+    --num_trainers 4 --num_servers 4 --num_samplers 0 \
+    --part_config /data/ogb_arxiv_train_val_1p_4t/ogbn-arxiv.json \
+    --extra_envs "LD_LIBRARY_PATH=/usr/local/cuda/lib64:/opt/amazon/efa/lib:/opt/amazon/openmpi/lib:/home/deepspeed/aws-ofi-nccl/install/lib:$LD_LIBRARY_PATH" \
+    --ip_config ip_list.txt \
+    "python3 gsgnn_lp.py --cf arxiv_lm_lp.yaml"
+```
+
+### Graph aware language model finetuning with an MLP to project bert embedding into lower dimension.
 ```
 $ DGL_HOME=/fsx-dev/xiangsx/home/workspace/dgl/dgl
 $ python3 $DGL_HOME/tools/launch.py \
@@ -25,75 +38,10 @@ $ python3 $DGL_HOME/tools/launch.py \
     --part_config ogb_arxiv_train_val_1p_4t/ogbn-arxiv.json \
     --extra_envs "LD_LIBRARY_PATH=/usr/local/cuda/lib64:/opt/amazon/efa/lib:/opt/amazon/openmpi/lib:/home/deepspeed/aws-ofi-nccl/install/lib:$LD_LIBRARY_PATH" \
     --ip_config ip_list.txt \
-    "python3 gsgnn_lp.py --cf arxiv_lp_hf.yaml"
+    "python3 gsgnn_lp.py --cf arxiv_lm_lp.yaml --model-encoder-type mlp"
 ```
 
-## Difference configurations
-train+validation+mixed-precision-O2+joint-sampler+save-model+save-embeds
-```
-python3 $DGL_HOME/tools/launch.py \
-    --workspace $GS_HOME/training_scripts/gsgnn_lp \
-    --num_trainers 4 --num_servers 4 --num_samplers 0 \
-    --part_config ogb_arxiv_train_val_1p_4t/ogbn-arxiv.json \
-    --extra_envs "LD_LIBRARY_PATH=/usr/local/cuda/lib64:/opt/amazon/efa/lib:/opt/amazon/openmpi/lib:/home/deepspeed/aws-ofi-nccl/install/lib:$LD_LIBRARY_PATH" \
-     --ip_config ip_list.txt \
-     "python3 gsgnn_lp.py --cf arxiv_lp_hf.yaml"
-```
-
-train+validation+mixed-precision-O1+local-uniform
-```
-python3 $DGL_HOME/tools/launch.py \
-    --workspace $GS_HOME/training_scripts/gsgnn_lp \
-    --num_trainers 4 --num_servers 4 --num_samplers 0 \
-    --part_config ogb_arxiv_train_val_1p_4t/ogbn-arxiv.json \
-    --extra_envs "LD_LIBRARY_PATH=/usr/local/cuda/lib64:/opt/amazon/efa/lib:/opt/amazon/openmpi/lib:/home/deepspeed/aws-ofi-nccl/install/lib:$LD_LIBRARY_PATH" \
-     --ip_config ip_list.txt \
-     "python3 gsgnn_lp.py --cf arxiv_lp_hf.yaml --mp-opt-level O1 --save-model-path none --save-embed-path none --negative-sampler uniform"
-```
-
-train+validation+mixed-precision-O1+joint+full-graph-infer
-```
-python3 $DGL_HOME/tools/launch.py \
-    --workspace $GS_HOME/training_scripts/gsgnn_lp \
-    --num_trainers 4 --num_servers 4 --num_samplers 0 \
-    --part_config ogb_arxiv_train_val_1p_4t/ogbn-arxiv.json \
-    --extra_envs "LD_LIBRARY_PATH=/usr/local/cuda/lib64:/opt/amazon/efa/lib:/opt/amazon/openmpi/lib:/home/deepspeed/aws-ofi-nccl/install/lib:$LD_LIBRARY_PATH" \
-     --ip_config ip_list.txt \
-     "python3 gsgnn_lp.py --cf arxiv_lp_hf.yaml --mp-opt-level O1 --save-model-path none --save-embed-path none --save-model-per-iters 0 --mini-batch-infer false"
-```
-
-train-only+mixed-precision-02+joint-sampler+save-model
-```
-python3 $DGL_HOME/tools/launch.py \
-    --workspace $GS_HOME/training_scripts/gsgnn_lp \
-    --num_trainers 4 --num_servers 4 --num_samplers 0 \
-    --part_config ogb_arxiv_train_val_1p_4t/ogbn-arxiv.json \
-    --extra_envs "LD_LIBRARY_PATH=/usr/local/cuda/lib64:/opt/amazon/efa/lib:/opt/amazon/openmpi/lib:/home/deepspeed/aws-ofi-nccl/install/lib:$LD_LIBRARY_PATH" \
-    --ip_config ip_list.txt \
-    "python3 gsgnn_lp.py --cf arxiv_lp_hf.yaml --part-config 'ogb_arxiv_train_1p_4t/ogbn-arxiv.json' save-model-path './models/ogb_arxiv/train_only/ogb_arxiv_train_1p_4t_model' --save-embed-path none --batch-size 64"
-```
-
-train+validation+localuniform-sampler+bert-cache
-```
-python3 $DGL_HOME/tools/launch.py \
-    --workspace $GS_HOME/training_scripts/gsgnn_lp \
-    --num_trainers 4 --num_servers 4 --num_samplers 0 \
-    --part_config ogb_arxiv_train_val_1p_4t/ogbn-arxiv.json \
-    --extra_envs "LD_LIBRARY_PATH=/usr/local/cuda/lib64:/opt/amazon/efa/lib:/opt/amazon/openmpi/lib:/home/deepspeed/aws-ofi-nccl/install/lib:$LD_LIBRARY_PATH" \
-     --ip_config ip_list.txt \
-     "python3 gsgnn_lp.py --cf arxiv_lp_hf.yaml --use-bert-cache true --refresh-cache true --mixed-precision false --save-model-path none --save-embed-path none --negative-sampler localuniform"
-```
-
-train+validation+mixed-precision-O2+joint-sampler+save-model+save-embeds+user-node-embedding
-```
-python3 $DGL_HOME/tools/launch.py \
-    --workspace $GS_HOME/training_scripts/gsgnn_lp \
-    --num_trainers 4 --num_servers 4 --num_samplers 0 \
-    --part_config ogb_arxiv_train_val_1p_4t/ogbn-arxiv.json \
-    --extra_envs "LD_LIBRARY_PATH=/usr/local/cuda/lib64:/opt/amazon/efa/lib:/opt/amazon/openmpi/lib:/home/deepspeed/aws-ofi-nccl/install/lib:$LD_LIBRARY_PATH" \
-    --ip_config ip_list.txt
-    "python3 gsgnn_lp.py --cf arxiv_lp_hf.yaml --use-node-embeddings true"
-```
+### Graph aware input layer with language model finetuning
 
 ## None-Bert Training
 Generate a graph data without g.nodes['node'].data['text_idx']

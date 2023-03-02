@@ -1,7 +1,7 @@
 """Builtin configs"""
 
 BUILTIN_GNN_ENCODER = ["rgat", "rgcn"]
-BUILTIN_ENCODER = ["lm"] + ["rgat", "rgcn"]
+BUILTIN_ENCODER = ["lm", "mlp"] + ["rgat", "rgcn"]
 SUPPORTED_BACKEND = ["gloo", "nccl"]
 
 BUILTIN_LP_LOSS_CROSS_ENTROPY = "cross_entropy"

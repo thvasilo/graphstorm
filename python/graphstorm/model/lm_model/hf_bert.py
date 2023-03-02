@@ -1,6 +1,7 @@
 """ Huggingface bert support
 """
 import time
+import inspect
 
 import numpy as np
 import torch as th
@@ -8,7 +9,7 @@ from torch import nn
 
 from transformers import BertModel, BertConfig
 
-from .lm_model import TOKEN_IDX, ATT_MASK_IDX, TOKEN_TID_IDX
+from .lm_model import TOKEN_IDX, ATT_MASK_IDX, VALID_LEN, TOKEN_TID_IDX
 from .lm_model import GSFLanguageModelWrapper
 
 def load_hfbert_model(bert_configs):
@@ -16,8 +17,17 @@ def load_hfbert_model(bert_configs):
     """
     model_name = bert_configs["model_name"]
     gradient_checkpointing = bert_configs["gradient_checkpoint"]
+    signature = inspect.signature(BertConfig.__init__)
+    hidden_dropout_prob = bert_configs["hidden_dropout_prob"] \
+        if "hidden_dropout_prob" in bert_configs \
+        else signature.parameters['hidden_dropout_prob'].default
+    attention_probs_dropout_prob = bert_configs["attention_probs_dropout_prob"] \
+        if "attention_probs_dropout_prob" in bert_configs \
+        else signature.parameters['attention_probs_dropout_prob'].default
     config = BertConfig.from_pretrained(model_name,
-                                        gradient_checkpointing=gradient_checkpointing)
+                                        gradient_checkpointing=gradient_checkpointing,
+                                        hidden_dropout_prob=hidden_dropout_prob,
+                                        attention_probs_dropout_prob=attention_probs_dropout_prob)
 
     lm_model = BertModel.from_pretrained(model_name, config=config)
     return lm_model
@@ -43,7 +53,7 @@ class HFBertWrapper(GSFLanguageModelWrapper):
                  profile=False):
         super(HFBertWrapper, self).__init__(
             lm_model, num_train,
-            lm_model.config.hidden_size, [TOKEN_IDX, ATT_MASK_IDX],
+            lm_model.config.hidden_size, [TOKEN_IDX, ATT_MASK_IDX, VALID_LEN, TOKEN_TID_IDX],
             lm_infer_batchszie, profile)
 
         self.origin_num_train = self.num_train
@@ -143,15 +153,27 @@ class HFBertWrapper(GSFLanguageModelWrapper):
         for ntype in input_ntypes:
             input_id = input_lm_feats[ntype][TOKEN_IDX].to(dev)
             input_id_lens.append(input_id.shape[0])
-            # If ATT_MASK_IDX does not exist, we expect the VALID_LEN_IDX
-            # stores the valid token length (We can build attention mask based
-            # on it.).
-            attention_mask = input_lm_feats[ntype][ATT_MASK_IDX].to(dev)
-            if len(attention_mask.shape) == 1:
+            # If ATT_MASK_IDX does not exist, we expect the VALID_LEN
+            # stores the valid token length
+            if ATT_MASK_IDX in input_lm_feats[ntype]:
+                # Get ATT_MASK. In some cases, ATT_MASK_IDX actually stores the Valid
+                # mask lenght, i.e., len(attention_mask.shape) == 1, we need to convert it
+                # into ATT_MASK_IDX.
+                attention_mask = input_lm_feats[ntype][ATT_MASK_IDX].to(dev)
+                if len(attention_mask.shape) == 1:
+                    length = input_id.shape[1]
+                    attention_mask = attention_mask.long()
+                    att_mask = th.arange(0, length, device=input_id.device)
+                    attention_mask = att_mask.reshape((1, -1)) < attention_mask.reshape((-1, 1))
+            else:
+                # Rebuild attention mask based on VALID_LEN.
+                valid_len = input_lm_feats[ntype][VALID_LEN].to(dev)
+                assert len(valid_len.shape) == 1
                 length = input_id.shape[1]
-                attention_mask = attention_mask.long()
+                valid_len = valid_len.long()
                 att_mask = th.arange(0, length, device=input_id.device)
-                attention_mask = att_mask.reshape((1, -1)) < attention_mask.reshape((-1, 1))
+                attention_mask = att_mask.reshape((1, -1)) < valid_len.reshape((-1, 1))
+
             input_ids.append(input_id)
             attention_masks.append(attention_mask)
             if TOKEN_TID_IDX in input_lm_feats[ntype]:

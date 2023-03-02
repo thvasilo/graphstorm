@@ -12,7 +12,7 @@ from numpy.testing import assert_almost_equal, assert_equal
 import dgl
 
 from graphstorm.config import GSConfig
-from graphstorm.model import GSNodeInputLayer, RelationalGCNEncoder
+from graphstorm.model import GSNodeEncoderInputLayer, RelationalGCNEncoder
 from graphstorm.model import GSgnnNodeModel, GSgnnEdgeModel
 from graphstorm.model.rgcn_encoder import RelationalGCNEncoder
 from graphstorm.model.rgat_encoder import RelationalGATEncoder
@@ -33,9 +33,9 @@ def create_rgcn_node_model(g):
     model = GSgnnNodeModel(alpha_l2norm=0)
 
     feat_size = get_feat_size(g, 'feat')
-    encoder = GSNodeInputLayer(g, feat_size, 4,
-                               dropout=0,
-                               use_node_embeddings=True)
+    encoder = GSNodeEncoderInputLayer(g, feat_size, 4,
+                                      dropout=0,
+                                      use_node_embeddings=True)
     model.set_node_input_encoder(encoder)
 
     gnn_encoder = RelationalGCNEncoder(g, 4, 4,
@@ -51,9 +51,9 @@ def create_rgat_node_model(g):
     model = GSgnnNodeModel(alpha_l2norm=0)
 
     feat_size = get_feat_size(g, 'feat')
-    encoder = GSNodeInputLayer(g, feat_size, 4,
-                               dropout=0,
-                               use_node_embeddings=True)
+    encoder = GSNodeEncoderInputLayer(g, feat_size, 4,
+                                      dropout=0,
+                                      use_node_embeddings=True)
     model.set_node_input_encoder(encoder)
 
     gnn_encoder = RelationalGATEncoder(g, 4, 4,
@@ -114,9 +114,9 @@ def create_rgcn_edge_model(g):
     model = GSgnnEdgeModel(alpha_l2norm=0)
 
     feat_size = get_feat_size(g, 'feat')
-    encoder = GSNodeInputLayer(g, feat_size, 4,
-                               dropout=0,
-                               use_node_embeddings=True)
+    encoder = GSNodeEncoderInputLayer(g, feat_size, 4,
+                                      dropout=0,
+                                      use_node_embeddings=True)
     model.set_node_input_encoder(encoder)
 
     gnn_encoder = RelationalGCNEncoder(g, 4, 4,
