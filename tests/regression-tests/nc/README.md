@@ -1,8 +1,8 @@
 # Regression Tests for Node Classification
 
-Need to make sure the performance of GraphStorm is the similar on the various node classification tasks after each major development. 
+Need to make sure the performance of GraphStorm is the similar on the various node classification tasks after each major development.
 
-*note*: the regression test is designed to run on GraphStorm docker environment. To learn how to configure your Linux environment to run the GraphStorm in docker, please refer to the [GraphStorm Onboarding Tutorial](https://w.amazon.com/bin/view/AWS/AmazonAI/AIRE/GSF/OnboardTutorial). All below commands run within the GraphStorm docker container.
+*note*: the regression test is designed to run on GraphStorm docker environment. To learn how to configure your Linux environment to run the GraphStorm in docker, please refer to the [GraphStorm Onboarding Tutorial (Coming soon.)]. All below commands run within the GraphStorm docker container.
 
 Prerequist:
 -----------
@@ -32,7 +32,7 @@ bash tests/regression-tests/nc/ogbn_arxiv_nc_regression_test.sh
 
 Regression performance results:
 -------------------------------
-With two-RGCN layers, the best performance is 
+With two-RGCN layers, the best performance is
 ```python
 best_test_score: {'accuracy': 0.6305372096372652}
 best_val_score: {'accuracy': 0.6522366522366523}
@@ -94,11 +94,5 @@ Best performance:
 -----------------
 *note: we run the regression tests on an g4dn.12xlarge EC2 instance with 4 GPUs.*
 
-#### GSF Open Source
+#### GSF V0.1
 Epoch 00004, Train accuracy: N/A | Val accuracy: 0.9198 | Test accuracy: 0.7404, Eval time: 83.7984s
-
-#### GSF Main
-Epoch 00019, Train accuracy: 0.9722 | Val accuracy: 0.9050 | Test accuracy: 0.6976, Eval time: 97.38s
-
-#### M5GNN
-Train accuracy: -1.0000, Val accuracy: 0.6586, Test accuracy: 0.6219, Eval time: 1.0115, Evaluation step: 184.0000
