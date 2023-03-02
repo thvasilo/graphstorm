@@ -4,7 +4,7 @@ from transformers import AutoTokenizer
 
 from graphstorm.model.lm_model import init_lm_model
 from graphstorm.model.lm_model import BUILTIN_HF_BERT
-from graphstorm.model.lm_model import TOKEN_IDX, ATT_MASK_IDX, TOKEN_TID_IDX
+from graphstorm.model.lm_model import TOKEN_IDX, ATT_MASK_IDX, TOKEN_TID_IDX, VALID_LEN
 
 from numpy.testing import assert_almost_equal
 
@@ -38,31 +38,58 @@ def test_hfbert_wrapper(num_train, input_ntypes, generate_tid):
     input_texts = [["A Graph neural network (GNN) is a class of artificial neural networks for processing data that can be represented as graphs."], ["Amazon Web Services, Inc. (AWS) is a subsidiary of Amazon that provides on-demand cloud computing platforms and APIs to individuals, companies, and governments, on a metered, pay-as-you-go basis."], ["Hello world!"]]
     inputs = {}
     for i, ntype in enumerate(input_ntypes):
-        input_ids, _, attention_mask, token_type_ids = \
+        # test valid_len
+        input_ids, valid_len, attention_mask, token_type_ids = \
             create_tokens(tokenizer=tokenizer,
                           input_text=input_texts[i],
                           max_seq_length=max_seq_length,
                           num_node=num_nodes[i],
                           return_token_type_ids=generate_tid)
-        inputs[ntype] = (input_ids, attention_mask, token_type_ids)
+        inputs[ntype] = (input_ids, valid_len, attention_mask, token_type_ids)
 
     input_lm_feats = {}
     for ntype in input_ntypes:
         input_lm_feats[ntype] = {
             TOKEN_IDX: inputs[ntype][0],
-            ATT_MASK_IDX: inputs[ntype][1],
+            VALID_LEN: inputs[ntype][1],
         }
         if generate_tid:
-            input_lm_feats[ntype][TOKEN_TID_IDX] = inputs[ntype][2]
-
+            input_lm_feats[ntype][TOKEN_TID_IDX] = inputs[ntype][3].detach()
+    lm_model.eval()
     wrapper_emb = lm_model(input_ntypes, input_lm_feats)
+
+    input_lm_feats2 = {}
+    for ntype in input_ntypes:
+        input_lm_feats2[ntype] = {
+            TOKEN_IDX: inputs[ntype][0],
+            ATT_MASK_IDX: inputs[ntype][2],
+        }
+        if generate_tid:
+            input_lm_feats2[ntype][TOKEN_TID_IDX] = inputs[ntype][3].detach()
+    lm_model.eval()
+    wrapper_emb2 = lm_model(input_ntypes, input_lm_feats2)
+
+    input_lm_feats3 = {}
+    for ntype in input_ntypes:
+        input_lm_feats3[ntype] = {
+            TOKEN_IDX: inputs[ntype][0],
+            # hfbert also allows ATT_MASK_IDX store the valid mask lenght
+            ATT_MASK_IDX: inputs[ntype][2].sum(dim=1),
+        }
+        if generate_tid:
+            input_lm_feats3[ntype][TOKEN_TID_IDX] = inputs[ntype][3].detach()
+    lm_model.eval()
+    wrapper_emb3 = lm_model(input_ntypes, input_lm_feats3)
+
     for ntype in input_ntypes:
         emb = comput_bert(lm_model,
                           inputs[ntype][0].to(device),
-                          inputs[ntype][1].to(device),
-                          inputs[ntype][2].to(device) \
-                            if inputs[ntype][2] is not None else None)
+                          inputs[ntype][2].to(device),
+                          inputs[ntype][3].to(device) \
+                            if inputs[ntype][3] is not None else None)
         assert_almost_equal(wrapper_emb[ntype].detach().cpu().numpy(), emb.numpy(), decimal=5)
+        assert_almost_equal(wrapper_emb2[ntype].detach().cpu().numpy(), emb.numpy(), decimal=5)
+        assert_almost_equal(wrapper_emb3[ntype].detach().cpu().numpy(), emb.numpy(), decimal=5)
 
 def test_hfbert_wrapper_profile():
     device='cuda:0'
@@ -79,14 +106,14 @@ def test_hfbert_wrapper_profile():
     input_text_n1 = input_text * 100
     tokens_n1 = tokenizer(input_text_n1,  max_length=max_seq_length,
                            truncation=True, padding=True, return_tensors='pt')
-    # we only use TOKEN_IDX and VALID_LEN_IDX
+    # we only use TOKEN_IDX and ATT_MASK_IDX
     input_ids_n1 = tokens_n1[TOKEN_IDX].share_memory_()
-    valid_len_n1 = tokens_n1[ATT_MASK_IDX].sum(dim=1).share_memory_()
+    att_mask_n1 = tokens_n1[ATT_MASK_IDX].share_memory_()
 
     input_lm_feats = {}
     input_lm_feats["n1"] = {
         TOKEN_IDX: input_ids_n1,
-        ATT_MASK_IDX: valid_len_n1
+        ATT_MASK_IDX: att_mask_n1
     }
     lm_model.eval()
     lm_model(["n1"], input_lm_feats)

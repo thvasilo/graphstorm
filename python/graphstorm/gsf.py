@@ -7,8 +7,8 @@ from .config import BUILTIN_TASK_NODE_CLASSIFICATION
 from .config import BUILTIN_TASK_NODE_REGRESSION
 from .config import BUILTIN_TASK_EDGE_CLASSIFICATION
 from .config import BUILTIN_TASK_EDGE_REGRESSION
-from .model.embed import GSNodeInputLayer
-from .model.lm_embed import GSLMNodeInputLayer
+from .model.embed import GSNodeEncoderInputLayer
+from .model.lm_embed import GSLMNodeEncoderInputLayer, GSPureLMNodeInputLayer
 from .model.rgcn_encoder import RelationalGCNEncoder
 from .model.rgat_encoder import RelationalGATEncoder
 from .model.node_gnn import GSgnnNodeModel
@@ -105,7 +105,7 @@ def create_builtin_node_gnn_model(g, config, train_task):
     GSgnnModel : The GNN model.
     """
     model = GSgnnNodeModel(config.alpha_l2norm)
-    set_gnn_encoder(model, g, config, train_task)
+    set_encoder(model, g, config, train_task)
     if config.task_type == BUILTIN_TASK_NODE_CLASSIFICATION:
         model.set_decoder(EntityClassifier(model.gnn_encoder.out_dims,
                                            config.num_classes,
@@ -140,7 +140,7 @@ def create_builtin_edge_gnn_model(g, config, train_task):
     GSgnnModel : The GNN model.
     """
     model = GSgnnEdgeModel(config.alpha_l2norm)
-    set_gnn_encoder(model, g, config, train_task)
+    set_encoder(model, g, config, train_task)
     if config.task_type == BUILTIN_TASK_EDGE_CLASSIFICATION:
         num_classes = config.num_classes
         decoder_type = config.decoder_type
@@ -212,8 +212,26 @@ def create_builtin_lp_gnn_model(g, config, train_task):
     -------
     GSgnnModel : The GNN model.
     """
+    return create_builtin_lp_model(g, config, train_task)
+
+def create_builtin_lp_model(g, config, train_task):
+    """ Create a model for link prediction.
+
+    Parameters
+    ----------
+    g: DGLGraph
+        The graph used in training and testing
+    config: GSConfig
+        Configurations
+    train_task : bool
+        Whether this model is used for training.
+
+    Returns
+    -------
+    GSgnnModel : The model.
+    """
     model = GSgnnLinkPredictionModel(config.alpha_l2norm)
-    set_gnn_encoder(model, g, config, train_task)
+    set_encoder(model, g, config, train_task)
     num_train_etype = len(config.train_etype) \
         if config.train_etype is not None \
         else len(g.canonical_etypes) # train_etype is None, every etype is used for training
@@ -227,12 +245,16 @@ def create_builtin_lp_gnn_model(g, config, train_task):
         if get_rank() == 0:
             print('use dot product for single-etype task.')
             print("Using inner product objective for supervision")
-        decoder = LinkPredictDotDecoder(model.gnn_encoder.out_dims)
+        decoder = LinkPredictDotDecoder(model.gnn_encoder.out_dims \
+                                            if model.gnn_encoder is not None \
+                                            else model.node_input_encoder.out_dims)
     else:
         if get_rank() == 0:
             print("Using distmult objective for supervision")
         decoder = LinkPredictDistMultDecoder(g.canonical_etypes,
-                                             model.gnn_encoder.out_dims,
+                                             model.gnn_encoder.out_dims \
+                                                if model.gnn_encoder is not None \
+                                                else model.node_input_encoder.out_dims,
                                              config.gamma)
     model.set_decoder(decoder)
     model.set_loss_func(LinkPredictLossFunc())
@@ -241,7 +263,7 @@ def create_builtin_lp_gnn_model(g, config, train_task):
                              weight_decay=config.wd_l2norm)
     return model
 
-def set_gnn_encoder(model, g, config, train_task):
+def set_encoder(model, g, config, train_task):
     """ Create GNN encoder.
 
     Parameters
@@ -255,24 +277,35 @@ def set_gnn_encoder(model, g, config, train_task):
     """
     # Set input layer
     feat_size = get_feat_size(g, config.feat_name)
+    model_encoder_type = config.model_encoder_type
     if config.node_lm_configs is not None:
-        encoder = GSLMNodeInputLayer(g, config.node_lm_configs,
-                                     feat_size, config.n_hidden,
-                                     num_train=config.lm_train_nodes,
-                                     lm_infer_batchszie=config.lm_infer_batchszie,
-                                     lm_freeze_epochs=config.freeze_lm_encoder_epochs,
-                                     dropout=config.dropout,
-                                     use_node_embeddings=config.use_node_embeddings)
+        if model_encoder_type == "lm":
+            # only use language model(s) as input layer encoder(s)
+            encoder = GSPureLMNodeInputLayer(g, config.node_lm_configs,
+                                             num_train=config.lm_train_nodes,
+                                             lm_infer_batchszie=config.lm_infer_batchszie,
+                                             lm_freeze_epochs=config.freeze_lm_encoder_epochs)
+        else:
+            encoder = GSLMNodeEncoderInputLayer(g, config.node_lm_configs,
+                                                feat_size, config.n_hidden,
+                                                num_train=config.lm_train_nodes,
+                                                lm_infer_batchszie=config.lm_infer_batchszie,
+                                                lm_freeze_epochs=config.freeze_lm_encoder_epochs,
+                                                dropout=config.dropout,
+                                                use_node_embeddings=config.use_node_embeddings)
     else:
-        encoder = GSNodeInputLayer(g, feat_size, config.n_hidden,
-                                   dropout=config.dropout,
-                                   use_node_embeddings=config.use_node_embeddings)
+        encoder = GSNodeEncoderInputLayer(g, feat_size, config.n_hidden,
+                                          dropout=config.dropout,
+                                          use_node_embeddings=config.use_node_embeddings)
     model.set_node_input_encoder(encoder)
 
     # Set GNN encoders
-    model_encoder_type = config.model_encoder_type
     dropout = config.dropout if train_task else 0
-    if model_encoder_type == "rgcn":
+    if model_encoder_type == "mlp" or model_encoder_type == "lm":
+        # Only input encoder is used
+        assert config.n_layers == 0, "No GNN layers"
+        gnn_encoder = None
+    elif model_encoder_type == "rgcn":
         n_bases = config.n_bases
         # we need to set the n_layers -1 because there is an output layer
         # that is hard coded.

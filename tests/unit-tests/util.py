@@ -13,9 +13,7 @@ def create_tokens(tokenizer, input_text, max_seq_length, num_node, return_token_
                         truncation=True, padding='max_length', return_tensors='pt')
     # we only use TOKEN_IDX and VALID_LEN_IDX
     input_ids = tokens[TOKEN_IDX]
+    attention_mask = tokens[ATT_MASK_IDX]
     valid_len = tokens[ATT_MASK_IDX].sum(dim=1)
-    attention_mask = valid_len.long()
-    att_mask = th.arange(0, max_seq_length)
-    attention_mask = att_mask.reshape((1, -1)) < attention_mask.reshape((-1, 1))
     token_type_ids = tokens[TOKEN_TID_IDX] if return_token_type_ids else None
     return input_ids, valid_len, attention_mask, token_type_ids

@@ -218,6 +218,16 @@ class GSgnnModel(GSgnnModelBase):    # pylint: disable=abstract-method
         encoder : GSLayer
             The GNN encoder.
         """
+        # GNN encoder is not used.
+        if encoder is None:
+            self._gnn_encoder = None
+            if self.node_input_encoder is not None and self.decoder is not None:
+                assert self.node_input_encoder.out_dims == self.decoder.in_dims, \
+                    'When GNN encoder is not used, the output dimensions of ' \
+                    'the node input encoder should match the input dimension of' \
+                    'the decoder.'
+            return
+
         assert isinstance(encoder, GSLayerBase), \
                 'The GNN encoder should be the class of GSLayerBase.'
         if self.node_input_encoder is not None:
@@ -327,6 +337,30 @@ class GSgnnModel(GSgnnModelBase):    # pylint: disable=abstract-method
         """the optimizer
         """
         return self._optimizer
+
+    def comput_input_embed(self, input_nodes, input_feats, epoch, total_steps):
+        """ Compute input encoder embedding on a minibatch
+
+        Parameters
+        ----------
+        input_nodes : dict of Tensors
+            The input nodes.
+        input_feats : dict of Tensors
+            The input node features.
+        epoch: int
+            Current training epoch
+            Default -1 means epoch is not initialized. (e.g., in prediction)
+        total_steps: int
+            Current training steps (iterations)
+            Default -1 means train step is not initialized. (e.g., in prediction)
+
+        Returns
+        -------
+        dict of Tensors: The GNN embeddings.
+        """
+        embs = self.node_input_encoder(input_feats, input_nodes, epoch, total_steps)
+
+        return embs
 
     def compute_embed_step(self, blocks, input_feats, epoch=-1, total_steps=-1):
         """ Compute the GNN embeddings on a mini-batch.
@@ -447,12 +481,16 @@ def do_full_graph_inference(model, data, batch_size=1024, edge_mask=None, task_t
     t1 = time.time() # pylint: disable=invalid-name
     # full graph evaluation
     th.distributed.barrier()
-    model.eval()
-    embeddings = dist_inference(data.g, model.gnn_encoder, node_embed,
-                                batch_size, -1, edge_mask=edge_mask,
-                                task_tracker=task_tracker)
-    # TODO(zhengda) we should avoid getting rank from the graph.
-    if get_rank() == 0:
-        print(f"computing GNN embeddings: {time.time() - t1:.4f} seconds")
-    model.train()
+    if model.gnn_encoder is None:
+        # Only graph aware but not GNN models
+        embeddings = node_embed
+    else:
+        model.eval()
+        embeddings = dist_inference(data.g, model.gnn_encoder, node_embed,
+                                    batch_size, -1, edge_mask=edge_mask,
+                                    task_tracker=task_tracker)
+        # TODO(zhengda) we should avoid getting rank from the graph.
+        if get_rank() == 0:
+            print(f"computing GNN embeddings: {time.time() - t1:.4f} seconds")
+        model.train()
     return embeddings

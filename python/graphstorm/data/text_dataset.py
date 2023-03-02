@@ -4,7 +4,7 @@ import multiprocessing
 import torch as th
 from transformers import AutoTokenizer
 from .dataset import GSgnnDataset
-from .constants import TOKEN_IDX, ATT_MASK_IDX, VALID_LEN_IDX
+from .constants import TOKEN_IDX, ATT_MASK_IDX, VALID_LEN
 
 def local_tokenize(inputs):
     """
@@ -18,13 +18,15 @@ def local_tokenize(inputs):
     sub_tokens = tokenizer(val,  max_length=max_seq_length,
                            truncation=True, padding=True, return_tensors='pt')
 
-    # we only use TOKEN_IDX and VALID_LEN_IDX
+    # we only use TOKEN_IDX and ATT_MASK_IDX
     input_ids = sub_tokens[TOKEN_IDX].share_memory_()
     valid_len = sub_tokens[ATT_MASK_IDX].sum(dim=1).share_memory_()
 
+    # We store valid attention mask length in VALID_LEN to save space.
+    # We will convert it into ATT_MASK_IDX during forward pass.
     return {
         TOKEN_IDX: input_ids,
-        VALID_LEN_IDX: valid_len
+        VALID_LEN: valid_len
     }
 
 class GSgnnTextDataset(GSgnnDataset):
@@ -96,15 +98,17 @@ class GSgnnTextDataset(GSgnnDataset):
 
                 for output in outputs:
                     input_ids.append(output[TOKEN_IDX])
-                    valid_len.append(output[VALID_LEN_IDX])
+                    valid_len.append(output[VALID_LEN])
 
                 input_ids = th.cat(input_ids)
                 valid_len = th.cat(valid_len)
 
                 print("Done tokenizing {}".format(key))
+                # We store valid attention mask length in VALID_LEN to save space.
+                # We will convert it into ATT_MASK_IDX during forward pass.
                 new_feats[key] = {
                         TOKEN_IDX: input_ids,
-                        VALID_LEN_IDX: valid_len,
+                        VALID_LEN: valid_len,
                     }
         return new_feats
 

@@ -5,7 +5,7 @@ EDGE_DST_IDX='dst_id'
 NODE_ID_IDX='id'
 
 TOKEN_IDX = 'input_ids'
-VALID_LEN_IDX = 'valid_len'
+VALID_LEN = 'valid_len'
 ATT_MASK_IDX = 'attention_mask'
 TOKEN_TID_IDX = 'token_type_ids'
 LABEL_IDX = 'labels'

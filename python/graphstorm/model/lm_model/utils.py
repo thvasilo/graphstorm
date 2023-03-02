@@ -52,6 +52,11 @@ def get_lm_node_feats(g, lm_model, lm_ntypes):
         {Node type: {Feature name: Feature stored as distributed tensor}}
     """
     lm_feat_names = lm_model.lm_fnames
-    lm_feats = {ntype: {lm_fname: g.nodes[ntype].data[lm_fname] for lm_fname in lm_feat_names}
-        for ntype in lm_ntypes}
+    lm_feats = {}
+    for ntype in lm_ntypes:
+        lm_feats[ntype] = {}
+        for lm_fname in lm_feat_names:
+            if lm_fname in g.nodes[ntype].data:
+                lm_feats[ntype][lm_fname] = g.nodes[ntype].data[lm_fname]
+
     return lm_feats

@@ -28,8 +28,51 @@ def init_emb(shape, dtype):
     nn.init.uniform_(arr, -1.0, 1.0)
     return arr
 
-class GSNodeInputLayer(GSLayer):
-    """The input embedding layer for all nodes in a heterogeneous graph.
+class GSNodeInputLayer(GSLayer): # pylint: disable=abstract-method
+    """The input layer for all nodes in a heterogeneous graph.
+
+    Parameters
+    ----------
+    g: DistGraph
+        The distributed graph
+    """
+    def __init__(self, g):
+        super(GSNodeInputLayer, self).__init__()
+        self.g = g
+        # By default, there is no learnable embeddings (sparse_embeds)
+        self._sparse_embeds = {}
+
+    def warmup(self, _):
+        """ Do nothing
+        """
+
+    def get_sparse_params(self):
+        """ get the sparse parameters.
+
+        Returns
+        -------
+        list of Tensors: the sparse embeddings.
+        """
+        # By default, there is no sparse_embeds
+        return []
+
+    @property
+    def sparse_embeds(self):
+        """ Get sparse embeds
+        """
+        return self._sparse_embeds
+
+    @property
+    def in_dims(self):
+        """ The number of input dimensions.
+
+        The input dimension can be different for different node types.
+        """
+        return None
+
+
+class GSNodeEncoderInputLayer(GSNodeInputLayer):
+    """The input encoder layer for all nodes in a heterogeneous graph.
 
     The input layer adds learnable embeddings on nodes if the nodes do not have features.
     It adds a linear layer on nodes with node features and the linear layer projects the node
@@ -60,15 +103,13 @@ class GSNodeInputLayer(GSLayer):
                  activation=None,
                  dropout=0.0,
                  use_node_embeddings=False):
-        super(GSNodeInputLayer, self).__init__()
-        self.g = g
+        super(GSNodeEncoderInputLayer, self).__init__(g)
         self.embed_size = embed_size
         self.activation = activation
         self.dropout = nn.Dropout(dropout)
         self.use_node_embeddings = use_node_embeddings
 
         # create weight embeddings for each node for each relation
-        self.sparse_embeds = {}
         self.proj_matrix = nn.ParameterDict() if self.use_node_embeddings else None
         self.input_projs = nn.ParameterDict()
         embed_name = 'embed'
@@ -86,11 +127,11 @@ class GSNodeInputLayer(GSLayer):
                     if get_rank() == 0:
                         print('Use sparse embeddings on node {}'.format(ntype))
                     part_policy = g.get_node_partition_policy(ntype)
-                    self.sparse_embeds[ntype] = DistEmbedding(g.number_of_nodes(ntype),
-                                                              self.embed_size,
-                                                              embed_name + '_' + ntype,
-                                                              init_emb,
-                                                              part_policy)
+                    self._sparse_embeds[ntype] = DistEmbedding(g.number_of_nodes(ntype),
+                                                               self.embed_size,
+                                                               embed_name + '_' + ntype,
+                                                               init_emb,
+                                                               part_policy)
                     proj_matrix = nn.Parameter(th.Tensor(2 * self.embed_size, self.embed_size))
                     nn.init.xavier_uniform_(proj_matrix, gain=nn.init.calculate_gain('relu'))
                     # nn.ParameterDict support this assignment operation if not None,
@@ -100,32 +141,11 @@ class GSNodeInputLayer(GSLayer):
                 part_policy = g.get_node_partition_policy(ntype)
                 if get_rank() == 0:
                     print(f'Use sparse embeddings on node {ntype}:{g.number_of_nodes(ntype)}')
-                self.sparse_embeds[ntype] = DistEmbedding(g.number_of_nodes(ntype),
+                self._sparse_embeds[ntype] = DistEmbedding(g.number_of_nodes(ntype),
                                 self.embed_size,
                                 embed_name + '_' + ntype,
                                 init_emb,
                                 part_policy=part_policy)
-
-    def warmup(self, _):
-        """ Do nothing
-        """
-
-    def has_dense_params(self):
-        """ test if the module has dense parameters.
-        """
-        return len(self.input_projs) > 0
-
-    def get_sparse_params(self):
-        """ get the sparse parameters.
-
-        Returns
-        -------
-        list of Tensors: the sparse embeddings.
-        """
-        if self.sparse_embeds is not None and len(self.sparse_embeds) > 0:
-            return list(self.sparse_embeds.values())
-        else:
-            return []
 
     def forward(self, input_feats, input_nodes, *_):
         """Forward computation
@@ -172,13 +192,17 @@ class GSNodeInputLayer(GSLayer):
 
         return embs
 
-    @property
-    def in_dims(self):
-        """ The number of input dimensions.
+    def get_sparse_params(self):
+        """ get the sparse parameters.
 
-        The input dimension can be different for different node types.
+        Returns
+        -------
+        list of Tensors: the sparse embeddings.
         """
-        return None
+        if self.sparse_embeds is not None and len(self.sparse_embeds) > 0:
+            return list(self.sparse_embeds.values())
+        else:
+            return []
 
     @property
     def out_dims(self):

@@ -10,7 +10,7 @@ class GSgnnLinkPredictionModelInterface:
     This interface defines two main methods for training and inference.
     """
     @abc.abstractmethod
-    def forward(self, blocks, pos_graph, neg_graph,
+    def forward(self, input_nodes, blocks, pos_graph, neg_graph,
         node_feats, edge_feats, epoch=-1, total_steps=-1):
         """ The forward function for link prediction.
 
@@ -20,6 +20,8 @@ class GSgnnLinkPredictionModelInterface:
 
         Parameters
         ----------
+        input_nodes: dict of Tensors
+            The input nodes of a mini-batch.
         blocks : list of DGLBlock
             The message passing graph for computing GNN embeddings.
         pos_graph : a DGLGraph
@@ -64,19 +66,24 @@ class GSgnnLinkPredictionModel(GSgnnModel, GSgnnLinkPredictionModelInterface):
         super(GSgnnLinkPredictionModel, self).__init__()
         self.alpha_l2norm = alpha_l2norm
 
-    def forward(self, blocks, pos_graph,
+    def forward(self, input_nodes, blocks, pos_graph,
         neg_graph, node_feats, _, epoch=-1, total_steps=-1):
         """ The forward function for link prediction.
 
         This model doesn't support edge features for now.
         """
         alpha_l2norm = self.alpha_l2norm
-        gnn_embs = self.compute_embed_step(blocks, node_feats, epoch, total_steps)
+        if blocks is None or len(blocks) == 0:
+            # no GNN message passing
+            encode_embs = self.comput_input_embed(input_nodes, node_feats, epoch, total_steps)
+        else:
+            # GNN message passing
+            encode_embs = self.compute_embed_step(blocks, node_feats, epoch, total_steps)
 
         # TODO add w_relation in calculating the score. The current is only valid for
         # homogenous graph.
-        pos_score = self.decoder(pos_graph, gnn_embs)
-        neg_score = self.decoder(neg_graph, gnn_embs)
+        pos_score = self.decoder(pos_graph, encode_embs)
+        neg_score = self.decoder(neg_graph, encode_embs)
         pred_loss = self.loss_func(pos_score, neg_score)
 
         # add regularization loss to all parameters to avoid the unused parameter errors
