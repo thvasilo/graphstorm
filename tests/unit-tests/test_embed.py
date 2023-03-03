@@ -306,6 +306,38 @@ def test_lm_embed(num_train):
     th.distributed.destroy_process_group()
     dgl.distributed.kvstore.close_kvstore()
 
+
+@pytest.mark.parametrize("num_train", [0, 10])
+def test_lm_embed(num_train):
+    # initialize the torch distributed environment
+    th.distributed.init_process_group(backend='gloo',
+                                      init_method='tcp://127.0.0.1:23456',
+                                      rank=0,
+                                      world_size=1)
+    lm_config, feat_size, input_ids, attention_mask, g = create_lm_graph()
+    layer = GSLMNodeEncoderInputLayer(g, lm_config, feat_size, 128, num_train=num_train)
+    layer.prepare(g)
+    if num_train == 0:
+        assert len(layer.lm_emb_cache) > 0
+    else:
+        assert len(layer.lm_emb_cache) == 0
+
+    embeds_with_lm = compute_node_input_embeddings(g, 10, layer,
+                                                   feat_field={'n0' : ['feat']})
+
+    layer.lm_models[0].lm_model.eval()
+    outputs = layer.lm_models[0].lm_model(input_ids,
+                                           attention_mask=attention_mask)
+    layer.lm_models[0].lm_model.train()
+    out_emb = outputs.pooler_output
+
+    assert len(embeds_with_lm) == len(g.ntypes)
+    # There is a feature projection layer, the output of lm_models does not match
+    # the output of GSLMNodeEncoderInputLayer
+    assert out_emb.shape[1] != embeds_with_lm['n0'].shape[1]
+    th.distributed.destroy_process_group()
+    dgl.distributed.kvstore.close_kvstore()
+
 @pytest.mark.parametrize("num_train", [0, 10])
 def test_pure_lm_embed(num_train):
     # initialize the torch distributed environment
@@ -313,7 +345,7 @@ def test_pure_lm_embed(num_train):
                                       init_method='tcp://127.0.0.1:23456',
                                       rank=0,
                                       world_size=1)
-    lm_config, feat_size, input_ids, attention_mask, g = create_lm_graph()
+    lm_config, _, _, _, g = create_lm_graph()
 
     # GSPureLMNodeInputLayer will fail as not all ntypes in g have text feature
     has_error = False
@@ -326,7 +358,7 @@ def test_pure_lm_embed(num_train):
     lm_config, feat_size, input_ids0, attention_mask0, \
         input_ids1, attention_mask1, g = create_lm_graph2()
     layer = GSPureLMNodeInputLayer(g, lm_config, num_train=num_train)
-    layer.warmup(g)
+    layer.prepare(g)
     if num_train == 0:
         assert len(layer.lm_emb_cache) > 0
     else:
@@ -387,9 +419,8 @@ def test_lm_embed_warmup():
     g.nodes['n0'].data[ATT_MASK_IDX] = valid_len
 
     layer = GSLMNodeEncoderInputLayer(g, lm_config, feat_size,
-                                      2, num_train=num_train,
-                                      lm_freeze_epochs=2)
-    layer.warmup(g)
+                                      2, num_train=num_train)
+    layer.freeze(g)
     assert len(layer.lm_emb_cache) > 0
     feat_field={'n0' : ['feat']}
     input_nodes = {"n0": th.arange(0, 10, dtype=th.int64)}
@@ -402,13 +433,15 @@ def test_lm_embed_warmup():
         if isinstance(m, th.nn.Embedding):
             th.nn.init.uniform(m.weight.data)
     layer.lm_models[0].lm_model.apply(rand_init)
-    # epoch < lm_freeze_epochs, still use bert cache.
+    # model has been freezed, still use bert cache.
     feat = prepare_batch_input(g, input_nodes, dev='cpu', feat_field=feat_field)
-    emb_1 = layer(feat, input_nodes, 1)
+    emb_1 = layer(feat, input_nodes)
     assert_almost_equal(emb_0['n0'].detach().numpy(), emb_1['n0'].detach().numpy(), decimal=6)
-    # epoch == lm_freeze_epochs, compute bert again
+
+    # unfreeze the model, compute bert again
     feat = prepare_batch_input(g, input_nodes, dev='cpu', feat_field=feat_field)
-    emb_2 = layer(feat, input_nodes, 2)
+    layer.unfreeze()
+    emb_2 = layer(feat, input_nodes)
     with assert_raises(AssertionError):
          assert_almost_equal(emb_0['n0'].detach().numpy(), emb_2['n0'].detach().numpy(), decimal=1)
 
@@ -429,6 +462,9 @@ if __name__ == '__main__':
 
     test_pure_lm_embed(0)
     test_pure_lm_embed(10)
+
+    test_lm_embed(0)
+    test_lm_embed(10)
 
     test_lm_embed_warmup()
     test_lm_infer()

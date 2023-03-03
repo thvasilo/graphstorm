@@ -10,8 +10,8 @@ class GSgnnLinkPredictionModelInterface:
     This interface defines two main methods for training and inference.
     """
     @abc.abstractmethod
-    def forward(self, input_nodes, blocks, pos_graph, neg_graph,
-        node_feats, edge_feats, epoch=-1, total_steps=-1):
+    def forward(self, blocks, pos_graph, neg_graph,
+        node_feats, edge_feats, input_nodes=None):
         """ The forward function for link prediction.
 
         This method is used for training. It takes a mini-batch, including
@@ -20,8 +20,6 @@ class GSgnnLinkPredictionModelInterface:
 
         Parameters
         ----------
-        input_nodes: dict of Tensors
-            The input nodes of a mini-batch.
         blocks : list of DGLBlock
             The message passing graph for computing GNN embeddings.
         pos_graph : a DGLGraph
@@ -32,12 +30,9 @@ class GSgnnLinkPredictionModelInterface:
             The input node features of the message passing graphs.
         edge_feats : dict of Tensors
             The input edge features of the message passing graphs.
-        epoch: int
-            Current training epoch
-            Default -1 means epoch is not initialized. (e.g., in prediction)
-        total_steps: int
-            Current training steps (iterations)
-            Default -1 means training step is not initialized. (e.g., in prediction)
+        input_nodes: dict of Tensors
+            The input nodes of a mini-batch.
+
         Returns
         -------
         The loss of prediction.
@@ -66,8 +61,8 @@ class GSgnnLinkPredictionModel(GSgnnModel, GSgnnLinkPredictionModelInterface):
         super(GSgnnLinkPredictionModel, self).__init__()
         self.alpha_l2norm = alpha_l2norm
 
-    def forward(self, input_nodes, blocks, pos_graph,
-        neg_graph, node_feats, _, epoch=-1, total_steps=-1):
+    def forward(self, blocks, pos_graph,
+        neg_graph, node_feats, _, input_nodes=None):
         """ The forward function for link prediction.
 
         This model doesn't support edge features for now.
@@ -75,10 +70,10 @@ class GSgnnLinkPredictionModel(GSgnnModel, GSgnnLinkPredictionModelInterface):
         alpha_l2norm = self.alpha_l2norm
         if blocks is None or len(blocks) == 0:
             # no GNN message passing
-            encode_embs = self.comput_input_embed(input_nodes, node_feats, epoch, total_steps)
+            encode_embs = self.comput_input_embed(input_nodes, node_feats)
         else:
             # GNN message passing
-            encode_embs = self.compute_embed_step(blocks, node_feats, epoch, total_steps)
+            encode_embs = self.compute_embed_step(blocks, node_feats)
 
         # TODO add w_relation in calculating the score. The current is only valid for
         # homogenous graph.

@@ -89,7 +89,25 @@ def get_feat_size(g, feat_names):
     return feat_size
 
 def create_builtin_node_gnn_model(g, config, train_task):
-    """ Create a built-in GNN model for node prediction.
+    """ Create a GNN model for node prediction.
+
+    Parameters
+    ----------
+    g: DGLGraph
+        The graph used in training and testing
+    config: GSConfig
+        Configurations
+    train_task : bool
+        Whether this model is used for training.
+
+    Returns
+    -------
+    GSgnnModel : The GNN model.
+    """
+    return create_builtin_node_model(g, config, train_task)
+
+def create_builtin_node_model(g, config, train_task):
+    """ Create a built-in model for node prediction.
 
     Parameters
     ----------
@@ -106,15 +124,20 @@ def create_builtin_node_gnn_model(g, config, train_task):
     """
     model = GSgnnNodeModel(config.alpha_l2norm)
     set_encoder(model, g, config, train_task)
+
     if config.task_type == BUILTIN_TASK_NODE_CLASSIFICATION:
-        model.set_decoder(EntityClassifier(model.gnn_encoder.out_dims,
+        model.set_decoder(EntityClassifier(model.gnn_encoder.out_dims \
+                                            if model.gnn_encoder is not None \
+                                            else model.node_input_encoder.out_dims,
                                            config.num_classes,
                                            config.multilabel))
         model.set_loss_func(ClassifyLossFunc(config.multilabel,
                                              config.multilabel_weights,
                                              config.imbalance_class_weights))
     elif config.task_type == BUILTIN_TASK_NODE_REGRESSION:
-        model.set_decoder(EntityRegression(model.gnn_encoder.out_dims))
+        model.set_decoder(EntityRegression(model.gnn_encoder.out_dims \
+                                            if model.gnn_encoder is not None \
+                                            else model.node_input_encoder.out_dims))
         model.set_loss_func(RegressionLossFunc())
     else:
         raise ValueError('unknown node task: {}'.format(config.task_type))
@@ -139,6 +162,24 @@ def create_builtin_edge_gnn_model(g, config, train_task):
     -------
     GSgnnModel : The GNN model.
     """
+    return create_builtin_edge_model(g, config, train_task)
+
+def create_builtin_edge_model(g, config, train_task):
+    """ Create a model for edge prediction.
+
+    Parameters
+    ----------
+    g: DGLGraph
+        The graph used in training and testing
+    config: GSConfig
+        Configurations
+    train_task : bool
+        Whether this model is used for training.
+
+    Returns
+    -------
+    GSgnnModel : The GNN model.
+    """
     model = GSgnnEdgeModel(config.alpha_l2norm)
     set_encoder(model, g, config, train_task)
     if config.task_type == BUILTIN_TASK_EDGE_CLASSIFICATION:
@@ -149,7 +190,9 @@ def create_builtin_edge_gnn_model(g, config, train_task):
         target_etype = config.target_etype[0]
         if decoder_type == "DenseBiDecoder":
             num_decoder_basis = config.num_decoder_basis
-            decoder = DenseBiDecoder(in_units=model.gnn_encoder.out_dims,
+            decoder = DenseBiDecoder(in_units=model.gnn_encoder.out_dims \
+                                        if model.gnn_encoder is not None \
+                                        else model.node_input_encoder.out_dims,
                                      num_classes=num_classes,
                                      multilabel=config.multilabel,
                                      num_basis=num_decoder_basis,
@@ -157,7 +200,9 @@ def create_builtin_edge_gnn_model(g, config, train_task):
                                      regression=False,
                                      target_etype=target_etype)
         elif decoder_type == "MLPDecoder":
-            decoder = MLPEdgeDecoder(model.gnn_encoder.out_dims,
+            decoder = MLPEdgeDecoder(model.gnn_encoder.out_dims \
+                                        if model.gnn_encoder is not None \
+                                        else model.node_input_encoder.out_dims,
                                      num_classes,
                                      multilabel=config.multilabel,
                                      target_etype=target_etype)
@@ -174,14 +219,20 @@ def create_builtin_edge_gnn_model(g, config, train_task):
         target_etype = config.target_etype[0]
         if decoder_type == "DenseBiDecoder":
             num_decoder_basis = config.num_decoder_basis
-            decoder = DenseBiDecoder(model.gnn_encoder.out_dims, 1,
+            decoder = DenseBiDecoder(model.gnn_encoder.out_dims \
+                                        if model.gnn_encoder is not None \
+                                        else model.node_input_encoder.out_dims,
+                                     1,
                                      num_basis=num_decoder_basis,
                                      multilabel=False,
                                      target_etype=target_etype,
                                      dropout_rate=dropout,
                                      regression=True)
         elif decoder_type == "MLPDecoder":
-            decoder = MLPEdgeDecoder(model.gnn_encoder.out_dims, 1,
+            decoder = MLPEdgeDecoder(model.gnn_encoder.out_dims \
+                                        if model.gnn_encoder is not None \
+                                        else model.node_input_encoder.out_dims,
+                                     1,
                                      multilabel=False,
                                      target_etype=target_etype,
                                      regression=True)
@@ -283,14 +334,12 @@ def set_encoder(model, g, config, train_task):
             # only use language model(s) as input layer encoder(s)
             encoder = GSPureLMNodeInputLayer(g, config.node_lm_configs,
                                              num_train=config.lm_train_nodes,
-                                             lm_infer_batchszie=config.lm_infer_batchszie,
-                                             lm_freeze_epochs=config.freeze_lm_encoder_epochs)
+                                             lm_infer_batchszie=config.lm_infer_batchszie)
         else:
             encoder = GSLMNodeEncoderInputLayer(g, config.node_lm_configs,
                                                 feat_size, config.n_hidden,
                                                 num_train=config.lm_train_nodes,
                                                 lm_infer_batchszie=config.lm_infer_batchszie,
-                                                lm_freeze_epochs=config.freeze_lm_encoder_epochs,
                                                 dropout=config.dropout,
                                                 use_node_embeddings=config.use_node_embeddings)
     else:
