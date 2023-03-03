@@ -126,6 +126,39 @@ class GSgnnModelBase(nn.Module):
         optimizers.
         """
 
+    #pylint: disable=unused-argument
+    def prepare_input_encoder(self, train_data):
+        """ Preparing input layer for training or inference.
+            The input layer can pre-compute node features in the preparing step
+            if needed. For example pre-compute all BERT embeddings
+
+            Default: do nothing
+
+        Parameters
+        ----------
+        train_data: GSgnnData
+            Graph data
+        """
+
+    #pylint: disable=unused-argument
+    def freeze_input_encoder(self, train_data):
+        """ Freeze input layer for model training.
+
+            Default: do nothing
+
+        Parameters
+        ----------
+        train_data: GSgnnData
+            Graph data
+        """
+
+    #pylint: disable=unused-argument
+    def unfreeze_input_encoder(self):
+        """ Unfreeze input layer for model training
+
+            Default: do nothing
+        """
+
     @property
     def device(self):
         """ The device where the model runs.
@@ -270,19 +303,30 @@ class GSgnnModel(GSgnnModelBase):    # pylint: disable=abstract-method
 
     def prepare_input_encoder(self, train_data):
         """ Preparing input layer for training or inference.
-            The input layer can pre-compute node features in the preparing step
-            if needed. For example pre-compute all BERT embeddings
-
-        Parameters
-        ----------
-        train_data: GSgnnData
-            Graph data
         """
         if self._node_input_encoder is not None:
-            self._node_input_encoder.warmup(train_data.g)
+            self._node_input_encoder.prepare(train_data.g)
 
         if self._edge_input_encoder is not None:
-            self._edge_input_encoder.warmup(train_data.g)
+            self._edge_input_encoder.prepare(train_data.g)
+
+    def freeze_input_encoder(self, train_data):
+        """ Freeze input layer for model training.
+        """
+        if self._node_input_encoder is not None:
+            self._node_input_encoder.freeze(train_data.g)
+
+        if self._edge_input_encoder is not None:
+            self._edge_input_encoder.freeze(train_data.g)
+
+    def unfreeze_input_encoder(self):
+        """ Unfreeze input layer for model training
+        """
+        if self._node_input_encoder is not None:
+            self._node_input_encoder.unfreeze()
+
+        if self._edge_input_encoder is not None:
+            self._edge_input_encoder.unfreeze()
 
     def restore_model(self, restore_model_path):
         """load saving checkpoints for GNN models.
@@ -338,7 +382,7 @@ class GSgnnModel(GSgnnModelBase):    # pylint: disable=abstract-method
         """
         return self._optimizer
 
-    def comput_input_embed(self, input_nodes, input_feats, epoch, total_steps):
+    def comput_input_embed(self, input_nodes, input_feats):
         """ Compute input encoder embedding on a minibatch
 
         Parameters
@@ -347,22 +391,16 @@ class GSgnnModel(GSgnnModelBase):    # pylint: disable=abstract-method
             The input nodes.
         input_feats : dict of Tensors
             The input node features.
-        epoch: int
-            Current training epoch
-            Default -1 means epoch is not initialized. (e.g., in prediction)
-        total_steps: int
-            Current training steps (iterations)
-            Default -1 means train step is not initialized. (e.g., in prediction)
 
         Returns
         -------
         dict of Tensors: The GNN embeddings.
         """
-        embs = self.node_input_encoder(input_feats, input_nodes, epoch, total_steps)
+        embs = self.node_input_encoder(input_feats, input_nodes)
 
         return embs
 
-    def compute_embed_step(self, blocks, input_feats, epoch=-1, total_steps=-1):
+    def compute_embed_step(self, blocks, input_feats):
         """ Compute the GNN embeddings on a mini-batch.
 
         This function is used for mini-batch inference.
@@ -373,12 +411,6 @@ class GSgnnModel(GSgnnModelBase):    # pylint: disable=abstract-method
             The message flow graphs for computing GNN embeddings.
         input_feats : dict of Tensors
             The input node features.
-        epoch: int
-            Current training epoch
-            Default -1 means epoch is not initialized. (e.g., in prediction)
-        total_steps: int
-            Current training steps (iterations)
-            Default -1 means train step is not initialized. (e.g., in prediction)
 
         Returns
         -------
@@ -388,7 +420,7 @@ class GSgnnModel(GSgnnModelBase):    # pylint: disable=abstract-method
         if self.node_input_encoder is not None:
             input_nodes = {ntype: blocks[0].srcnodes[ntype].data[dgl.NID].cpu() \
                     for ntype in blocks[0].srctypes}
-            embs = self.node_input_encoder(input_feats, input_nodes, epoch, total_steps)
+            embs = self.node_input_encoder(input_feats, input_nodes)
             embs = {name: emb.to(device) for name, emb in embs.items()}
         else:
             embs = input_feats

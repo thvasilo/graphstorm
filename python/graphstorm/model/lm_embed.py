@@ -132,16 +132,12 @@ class GSPureLMNodeInputLayer(GSNodeInputLayer):
         Number of trainable texts
     lm_infer_batchszie: int
         Batch size used for computing text embeddings for static lm model
-    lm_freeze_epochs: int
-        The number of epochs to freeze the lm model while warming-up the rest
-        of the network.
     """
     def __init__(self,
                  g,
                  node_lm_configs,
                  num_train=0,
-                 lm_infer_batchszie=16,
-                 lm_freeze_epochs=0):
+                 lm_infer_batchszie=16):
         super(GSPureLMNodeInputLayer, self).__init__(g)
         assert node_lm_configs is not None and len(node_lm_configs) > 0, \
             "language model configurations must be provided"
@@ -164,7 +160,7 @@ class GSPureLMNodeInputLayer(GSNodeInputLayer):
 
         self.num_train = num_train
         self.lm_infer_batchszie = lm_infer_batchszie
-        self.lm_freeze_epochs = lm_freeze_epochs
+        self.use_cache = False
         self.lm_emb_cache = {}
 
         self.lm_models = lm_models
@@ -177,29 +173,34 @@ class GSPureLMNodeInputLayer(GSNodeInputLayer):
                 "(--model-encoder-type mlp) instead of GSLMNodeLMInputLayer " \
                 "(--model-encoder-type lm)"
 
-    def warmup(self, g):
+    def prepare(self, g):
+        # If there is no trainable nodes, freeze Bert layer.
+        if self.num_train == 0:
+            self.freeze(g)
+
+    def freeze(self, g):
         """ Generate Bert caching if needed
         """
         # The lm_emb_cache is used in following cases:
         # 1) We don't need to fine-tune Bert, i.e., train_nodes == 0.
         #    In this case, we only generate bert lm_emb_cache once before model training.
         #
-        # 2) GNN warnup when lm_freeze_epochs > 0.
+        # 2) GNN warnup when lm_freeze_epochs > 0 (controlled by trainer)
         #    We generate the bert emb_cache before model training.
         #    In the first lm_freeze_epochs epochs, the number of trainable text
         #    nodes are set to 0 and the lm_emb_cache is not refreshed.
         #
         # 3) if train_nodes > 0, no emb_cache is used unless Case 2.
-        if self.num_train == 0 or self.lm_freeze_epochs > 0: # it is not initialized elsewhere
-            update_bert_cache(g,
-                              self.lm_models_info,
-                              self.lm_models,
-                              self.lm_emb_cache,
-                              self.lm_infer_batchszie)
+        update_bert_cache(g,
+                          self.lm_models_info,
+                          self.lm_models,
+                          self.lm_emb_cache,
+                          self.lm_infer_batchszie)
+        self.use_cache = True
 
     #pylint: disable=keyword-arg-before-vararg
     #pylint: disable=unused-argument
-    def forward(self, input_feats, input_nodes, epoch=-1, *_):
+    def forward(self, input_feats, input_nodes):
         """Forward computation
 
         Parameters
@@ -208,9 +209,6 @@ class GSPureLMNodeInputLayer(GSNodeInputLayer):
             input features, ignored
         input_nodes: dict
             input node ids
-        epoch: int
-            Current training epoch
-            Default -1 means epoch is not initialized. (e.g., in prediction)
 
         Returns
         -------
@@ -222,8 +220,7 @@ class GSPureLMNodeInputLayer(GSNodeInputLayer):
             self.lm_emb_cache,
             self.lm_models,
             self.lm_models_info,
-            use_cache=len(self.lm_emb_cache) > 0 \
-            and (self.num_train == 0 or 0 <= epoch < self.lm_freeze_epochs))
+            use_cache=len(self.lm_emb_cache) > 0 and self.use_cache)
 
         return lm_feats
 
@@ -259,9 +256,6 @@ class GSLMNodeEncoderInputLayer(GSNodeEncoderInputLayer):
         Number of trainable texts
     lm_infer_batchszie: int
         Batch size used for computing text embeddings for static lm model
-    lm_freeze_epochs: int
-        The number of epochs to freeze the lm model while warming-up the rest
-        of the network.
     activation : func
         The activation function
     dropout : float
@@ -277,7 +271,6 @@ class GSLMNodeEncoderInputLayer(GSNodeEncoderInputLayer):
                  embed_size,
                  num_train=0,
                  lm_infer_batchszie=16,
-                 lm_freeze_epochs=0,
                  activation=None,
                  dropout=0.0,
                  use_node_embeddings=False):
@@ -306,7 +299,7 @@ class GSLMNodeEncoderInputLayer(GSNodeEncoderInputLayer):
 
         self.num_train = num_train
         self.lm_infer_batchszie = lm_infer_batchszie
-        self.lm_freeze_epochs = lm_freeze_epochs
+        self.use_cache = False
         self.lm_emb_cache = {}
 
         super(GSLMNodeEncoderInputLayer, self).__init__(
@@ -316,28 +309,40 @@ class GSLMNodeEncoderInputLayer(GSNodeEncoderInputLayer):
         self.lm_models = lm_models
         self.lm_models_info = lm_models_info
 
-    def warmup(self, g):
+
+    def prepare(self, g):
+        # If there is no trainable nodes, freeze Bert layer.
+        if self.num_train == 0:
+            self.freeze(g)
+
+    def freeze(self, g):
         """ Generate Bert caching if needed
         """
         # The lm_emb_cache is used in following cases:
         # 1) We don't need to fine-tune Bert, i.e., train_nodes == 0.
         #    In this case, we only generate bert lm_emb_cache once before model training.
         #
-        # 2) GNN warnup when lm_freeze_epochs > 0.
+        # 2) GNN warnup when lm_freeze_epochs > 0 (controlled by trainer)
         #    We generate the bert emb_cache before model training.
         #    In the first lm_freeze_epochs epochs, the number of trainable text
         #    nodes are set to 0 and the lm_emb_cache is not refreshed.
         #
         # 3) if train_nodes > 0, no emb_cache is used unless Case 2.
-        if self.num_train == 0 or self.lm_freeze_epochs > 0: # it is not initialized elsewhere
-            update_bert_cache(g,
-                              self.lm_models_info,
-                              self.lm_models,
-                              self.lm_emb_cache,
-                              self.lm_infer_batchszie)
+        update_bert_cache(g,
+                          self.lm_models_info,
+                          self.lm_models,
+                          self.lm_emb_cache,
+                          self.lm_infer_batchszie)
+        self.use_cache = True
+
+    def unfreeze(self):
+        """ Disable Bert caching
+        """
+        if self.num_train != 0:
+            self.use_cache = False
 
     #pylint: disable=keyword-arg-before-vararg
-    def forward(self, input_feats, input_nodes, epoch=-1, *_):
+    def forward(self, input_feats, input_nodes):
         """Forward computation
 
         Parameters
@@ -346,9 +351,6 @@ class GSLMNodeEncoderInputLayer(GSNodeEncoderInputLayer):
             input features
         input_nodes: dict
             input node ids
-        epoch: int
-            Current training epoch
-            Default -1 means epoch is not initialized. (e.g., in prediction)
 
         Returns
         -------
@@ -362,8 +364,7 @@ class GSLMNodeEncoderInputLayer(GSNodeEncoderInputLayer):
             self.lm_emb_cache,
             self.lm_models,
             self.lm_models_info,
-            use_cache=len(self.lm_emb_cache) > 0 \
-                and (self.num_train == 0 or 0 <= epoch < self.lm_freeze_epochs))
+            use_cache=len(self.lm_emb_cache) > 0 and self.use_cache)
 
         for ntype, lm_feat in lm_feats.items():
             # move lm_feat to the right device

@@ -42,8 +42,25 @@ class GSNodeInputLayer(GSLayer): # pylint: disable=abstract-method
         # By default, there is no learnable embeddings (sparse_embeds)
         self._sparse_embeds = {}
 
-    def warmup(self, _):
-        """ Do nothing
+    def prepare(self, _):
+        """ Preparing input layer for training or inference.
+
+        The input layer can pre-compute node features in the preparing step
+        if needed. For example pre-compute all BERT embeddings
+
+        Default action: Do nothing
+        """
+
+    def freeze(self, _):
+        """ Freeze the models in input layer during model training
+
+        Default action: Do nothing
+        """
+
+    def unfreeze(self):
+        """ Unfreeze the models in input layer during model training
+
+        Default action: Do nothing
         """
 
     def get_sparse_params(self):
@@ -147,7 +164,7 @@ class GSNodeEncoderInputLayer(GSNodeInputLayer):
                                 init_emb,
                                 part_policy=part_policy)
 
-    def forward(self, input_feats, input_nodes, *_):
+    def forward(self, input_feats, input_nodes):
         """Forward computation
 
         Parameters

@@ -104,7 +104,7 @@ python3 /$GS_HOME/tools/partition_graph.py --dataset movie-lens-100k \
 export PYTHONPATH=$GS_HOME/python/
 python3 /$GS_HOME/tools/partition_graph.py --dataset movie-lens-100k-text \
 	--filepath /data \
-    --elabel_fields "user,rating,movie:rate" \
+    --elabel_field "user,rating,movie:rate" \
     --predict_etype "user,rating,movie" \
     --etask_type "classification" \
 	--num_trainers_per_machine 4 \

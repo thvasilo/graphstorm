@@ -8,7 +8,7 @@ from graphstorm.data import MovieLens100kNCDataset
 from graphstorm.data import ConstructedGraphDataset
 
 if __name__ == '__main__':
-    argparser = argparse.ArgumentParser("Partition DGL graphs for node and edge classification " 
+    argparser = argparse.ArgumentParser("Partition DGL graphs for node and edge classification "
                                         + "or regression tasks")
     # dataset and file arguments
     argparser.add_argument("-d", "--dataset", type=str, required=True,
@@ -17,7 +17,7 @@ if __name__ == '__main__':
     # node arguments
     argparser.add_argument('--predict_ntype', type=str, help='The node type for making prediction'
                            + 'Currently only support one node type.')
-    argparser.add_argument('--ntask_type', type=str, default='classification', nargs='?', 
+    argparser.add_argument('--ntask_type', type=str, default='classification', nargs='?',
                            choices=['classification', 'regression'],
                            help='The node prediction type. Only support either \"classsification\" or '
                                 '\"regression\". Default is \"classification\"')
@@ -27,7 +27,7 @@ if __name__ == '__main__':
     argparser.add_argument('--predict_etype', type=str, help='The canonical edge type for making '
                            + 'prediction. The format is \"scr_ntype,etype,dst_ntype\". '
                            + 'Currently only support one edge type.')
-    argparser.add_argument('--etask_type', type=str, default='classification',nargs='?', 
+    argparser.add_argument('--etask_type', type=str, default='classification',nargs='?',
                            choices=['classification', 'regression'],
                            help='The edge prediction type. Only support either \"classsification\" or '
                                 '\"regression\". Default is \"classification\"')
@@ -73,7 +73,7 @@ if __name__ == '__main__':
     args = argparser.parse_args()
     print(args)
     start = time.time()
-    
+
     constructed_graph = False
 
     # load graph data
@@ -100,7 +100,7 @@ if __name__ == '__main__':
     assert (args.train_pct + args.val_pct) <= 1, \
         "The sum of train and validation percentages should NOT larger than 1."
 
-    # predict node types and edge types check. At least one argument should be given. 
+    # predict node types and edge types check. At least one argument should be given.
     pred_ntypes = args.predict_ntype.split(',') if args.predict_ntype is not None else None
     if pred_ntypes is None:
         try:
@@ -238,7 +238,7 @@ if __name__ == '__main__':
                 # set split masks as predict edge's features
                 g.edges[etype].data['train_mask'] = train_mask
                 g.edges[etype].data['val_mask'] = val_mask
-                g.edges[etype].data['test_mask'] = test_mask                
+                g.edges[etype].data['test_mask'] = test_mask
         else:
             raise Exception('There is no predicted edge type to split. Please set the '
                             +'predict_etype argument ......')

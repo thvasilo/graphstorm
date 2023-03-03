@@ -72,9 +72,7 @@ def main(args):
     device = 'cuda:%d' % trainer.dev_id
     dataloader = dataloader_cls(train_data, train_data.train_idxs, [],
                                 config.batch_size, config.num_negative_edges, device,
-                                train_task=True,
-                                reverse_edge_types_map=config.reverse_edge_types_map,
-                                exclude_training_targets=config.exclude_training_targets)
+                                train_task=True)
 
     # TODO(zhengda) let's use full-graph inference for now.
     if config.test_negative_sampler == BUILTIN_LP_UNIFORM_NEG_SAMPLER:
@@ -99,7 +97,8 @@ def main(args):
                 save_model_path=config.save_model_path,
                 mini_batch_infer=config.mini_batch_infer,
                 save_model_per_iters=config.save_model_per_iters,
-                save_perf_results_path=config.save_perf_results_path)
+                save_perf_results_path=config.save_perf_results_path,
+                freeze_input_layer_epochs=config.freeze_lm_encoder_epochs)
 
     if config.save_embed_path is not None:
         best_model = trainer.get_best_model().to(device)

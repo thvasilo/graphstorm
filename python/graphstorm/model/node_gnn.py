@@ -12,7 +12,7 @@ class GSgnnNodeModelInterface:
     """
     @abc.abstractmethod
     def forward(self, blocks, node_feats, edge_feats,
-        labels, epoch=-1, total_steps=-1):
+        labels, input_nodes=None):
         """ The forward function for node prediction.
 
         This method is used for training. It takes a mini-batch, including
@@ -29,12 +29,8 @@ class GSgnnNodeModelInterface:
             The input edge features of the message passing graphs.
         labels: dict of Tensor
             The labels of the predicted nodes.
-        epoch: int
-            Current training epoch
-            Default -1 means epoch is not initialized. (e.g., in prediction)
-        total_steps: int
-            Current training steps (iterations)
-            Default -1 means training step is not initialized. (e.g., in prediction)
+        input_nodes: dict of Tensors
+            The input nodes of a mini-batch.
 
         Returns
         -------
@@ -83,18 +79,22 @@ class GSgnnNodeModel(GSgnnModel, GSgnnNodeModelInterface):
         super(GSgnnNodeModel, self).__init__()
         self.alpha_l2norm = alpha_l2norm
 
-    def forward(self, blocks, node_feats, _, labels, epoch=-1, total_steps=-1):
+    def forward(self, blocks, node_feats, _, labels, input_nodes=None):
         """ The forward function for node prediction.
 
         This GNN model doesn't support edge features for now.
         """
         alpha_l2norm = self.alpha_l2norm
-        gnn_embs = self.compute_embed_step(blocks, node_feats, epoch, total_steps)
+        if blocks is None or len(blocks) == 0:
+            # no GNN message passing
+            encode_embs = self.comput_input_embed(input_nodes, node_feats)
+        else:
+            encode_embs = self.compute_embed_step(blocks, node_feats)
         # TODO(zhengda) we only support node prediction on one node type now
         assert len(labels) == 1, "We only support prediction on one node type for now."
         target_ntype = list(labels.keys())[0]
-        assert target_ntype in gnn_embs
-        emb = gnn_embs[target_ntype]
+        assert target_ntype in encode_embs
+        emb = encode_embs[target_ntype]
         labels = labels[target_ntype]
         logits = self.decoder(emb)
         pred_loss = self.loss_func(logits, labels)

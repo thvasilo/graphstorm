@@ -37,7 +37,10 @@ class GSgnnLinkPredictionTrainer(GSgnnTrainer):
             save_model_path=None,
             save_model_per_iters=None,
             save_perf_results_path=None,
-            edge_mask_for_gnn_embeddings='train_mask'):
+            edge_mask_for_gnn_embeddings='train_mask',
+            freeze_input_layer_epochs=0,
+            freeze_gnn_layer_epochs=0, # pylint: disable=unused-argument
+            freeze_decoder_layer_epochs=0): # pylint: disable=unused-argument
         """ The fit function for link prediction.
 
         Parameters
@@ -63,6 +66,12 @@ class GSgnnLinkPredictionTrainer(GSgnnTrainer):
             The mask that indicates the edges used for computing GNN embeddings for model
             evaluation. By default, we use the edges in the training graph to compute
             GNN embeddings for evaluation.
+        freeze_input_layer_epochs: int
+            Freeze input layers for N epochs. Default: 0, no freeze.
+        freeze_gnn_layer_epochs: int
+            Freeze GNN layers for N epochs. TODO: Reserved for future usage
+        freeze_decoder_layer_epochs: int
+            Freeze decoder layers for N epochs. TODO: Reserved for future usage
         """
         if not mini_batch_infer:
             assert isinstance(self._model, GSgnnModel), \
@@ -71,6 +80,14 @@ class GSgnnLinkPredictionTrainer(GSgnnTrainer):
                                         output_device=self.dev_id,
                                         static_graph=True)
         device = model.device
+        data = train_loader.data
+
+        # Preparing input layer for training or inference.
+        # The input layer can pre-compute node features in the preparing step if needed.
+        # For example pre-compute all BERT embeddings
+        if freeze_input_layer_epochs > 0:
+            self._model.freeze_input_encoder(data)
+        # TODO(xiangsx) Support freezing gnn encoder and decoder
 
         # training loop
         dur = []
@@ -80,7 +97,6 @@ class GSgnnLinkPredictionTrainer(GSgnnTrainer):
         early_stop = False # used when early stop is True
         forward_time = 0
         back_time = 0
-        data = train_loader.data
         sys_tracker.check('start training')
         for epoch in range(n_epochs):
             model.train()
@@ -100,9 +116,13 @@ class GSgnnLinkPredictionTrainer(GSgnnTrainer):
                     num_input_nodes += nodes.shape[0]
 
                 t2 = time.time()
+                if freeze_input_layer_epochs <= i:
+                    self._model.unfreeze_input_encoder()
+                # TODO(xiangsx) Support unfreezing gnn encoder and decoder
+
                 # TODO(zhengda) we don't support edge features for now.
-                loss = model(input_nodes, blocks, pos_graph, neg_graph,
-                             input_feats, None, epoch, total_steps)
+                loss = model(blocks, pos_graph, neg_graph,
+                             input_feats, None, input_nodes)
 
                 t3 = time.time()
                 self.optimizer.zero_grad()

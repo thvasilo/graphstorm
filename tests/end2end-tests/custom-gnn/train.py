@@ -17,7 +17,7 @@ class MyGNNModel(gsmodel.GSgnnNodeModelBase):
         self._decoder = gsmodel.EntityClassifier(num_hidden, num_classes, multilabel=False)
         self._loss_fn = gsmodel.ClassifyLossFunc(multilabel=False)
 
-    def forward(self, blocks, node_feats, _, labels, epoch=-1, total_steps=-1):
+    def forward(self, blocks, node_feats, _, labels, input_nodes=None):
         input_nodes = {ntype: blocks[0].srcnodes[ntype].data[dgl.NID].cpu() \
                 for ntype in blocks[0].srctypes}
         embs = self._node_input(node_feats, input_nodes)
