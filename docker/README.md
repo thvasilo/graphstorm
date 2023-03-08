@@ -39,11 +39,13 @@ to the Amazon ECR repository for AWS customers.
 
 Please use the following command to build a Docker image with pip package
 ```shell
-bash /path-to-graph-storm/docker/build_docker_oss4ecr.sh /path-to-graph-storm/ pip-package-version docker-tag
+cd /path-to-graphstorm/docker/
+
+bash /path-to-graphstorm/docker/build_docker_oss4ecr.sh /path-to-graphstorm/ pip-package-version docker-tag
 ```
 There are three arguments of the `build_docker_oss4ecr.sh`:
 
-1. **path-to-graph-storm**(required), is the absolute path of the "graph-storm" folder, where you 
+1. **path-to-graphstorm**(required), is the absolute path of the GraphStorm folder, where you 
 clone the GraphStorm source code. For example, the path could be "/code/graph-storm".
 2. **pip-package-version**(required), is the GraphStorm pip installation version to build this 
 Docker image, e.g., "0.0.1+dda85537".
@@ -67,12 +69,14 @@ modification to their problem but do not want to spend time on environment confi
 
 Please use the following command to build a Docker image from source:
 ```shell
-bash /path-to-graph-storm/docker/build_docker_oss4local.sh /path-to-graph-storm/ docker-name docker-tag
+cd /path-to-graphstorm/docker/
+
+bash /path-to-graphstorm/docker/build_docker_oss4local.sh /path-to-graphstorm/ docker-name docker-tag
 ```
 
 There are three arguments of the `build_docker_oss4local.sh`:
 
-1. **path-to-graph-storm**(required), is the absolute path of the "graph-storm" folder, where you 
+1. **path-to-graphstorm**(required), is the absolute path of the GraphStorm folder, where you 
 clone the GraphStorm source code. For example, the path could be "/code/graph-storm".
 2. **docker-name**(optional), is the assigned name of the to be built Docker image. Default is 
 "graphstorm".
