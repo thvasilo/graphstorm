@@ -17,7 +17,7 @@ gsf:
     n_hidden: 256
     mini_batch_infer: false
   input:
-    restore_model_path: /data/ogbn-mag/model/
+    restore_model_path: null
   output:
     save_model_path: /data/ogbn-mag/model/
     save_embeds_path: /data/ogbn-mag/embed/
@@ -32,7 +32,7 @@ gsf:
   rgcn:
     n_bases: -1
     use_self_loop: true
-    use_dot_product: false
+    use_dot_product: true
     self_loop_init: false
     sparse_lr: 1e-2
     use_node_embeddings: false
