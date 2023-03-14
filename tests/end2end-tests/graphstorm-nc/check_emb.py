@@ -1,3 +1,19 @@
+"""
+    Copyright 2023 Contributors
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+"""
+
 import os, argparse
 import torch as th
 import json
@@ -35,13 +51,16 @@ if __name__ == '__main__':
             print(ntype_files)
             ntype_files.sort()
 
-            feats = [th.load(os.path.join(args.emb_path, nfile)) for nfile in ntype_files]
+            # Only work with torch 1.13+
+            feats = [th.load(os.path.join(args.emb_path, nfile), weights_only=True) \
+                for nfile in ntype_files]
             feats = th.cat(feats, dim=0)
             assert feats.shape[0] == num_nodes
             assert feats.shape[1] == args.emb_size
     else:
         files.sort()
-        feats = [th.load(nfile) for nfile in files]
+        # Only work with torch 1.13+
+        feats = [th.load(nfile, weights_only=True) for nfile in files]
         feats = th.cat(feats, dim=0)
         assert feats.shape[0] == node_map.values()[0]
         assert feats.shape[1] == args.emb_size
