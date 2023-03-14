@@ -1,3 +1,18 @@
+"""
+    Copyright 2023 Contributors
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+"""
 import os
 from pathlib import Path
 from argparse import Namespace
@@ -44,9 +59,13 @@ def test_save_embeddings():
     with tempfile.TemporaryDirectory() as tmpdirname:
         type0_random_emb, type1_random_emb = helper_save_embedding(tmpdirname)
 
-        feats_type0 = [th.load(os.path.join(tmpdirname, "type0_emb.part{}.bin".format(i))) for i in range(4)]
+        # Only work with torch 1.13+
+        feats_type0 = [th.load(os.path.join(tmpdirname, "type0_emb.part{}.bin".format(i)),
+                               weights_only=True) for i in range(4)]
         feats_type0 = th.cat(feats_type0, dim=0)
-        feats_type1 = [th.load(os.path.join(tmpdirname, "type1_emb.part{}.bin".format(i))) for i in range(4)]
+        # Only work with torch 1.13+
+        feats_type1 = [th.load(os.path.join(tmpdirname, "type1_emb.part{}.bin".format(i)),
+                               weights_only=True) for i in range(4)]
         feats_type1 = th.cat(feats_type1, dim=0)
 
         assert np.all(type0_random_emb.dist_tensor.numpy() == feats_type0.numpy())

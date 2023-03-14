@@ -1,4 +1,19 @@
-""" Utility functions and classes
+"""
+    Copyright 2023 Contributors
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+
+    Utility functions and classes.
 """
 import os
 import json
@@ -222,7 +237,17 @@ def load_model(model_path, gnn_model=None, embed_layer=None, decoder=None):
     decoder = decoder.module \
         if isinstance(decoder, DistributedDataParallel) else decoder
 
-    checkpoint = th.load(os.path.join(model_path, 'model.bin'), map_location='cpu')
+    if th.__version__ < "1.13.0":
+        print("WARNING: torch.load() uses pickle module implicitly, " \
+              "which is known to be insecure. It is possible to construct " \
+              "malicious pickle data which will execute arbitrary code " \
+              "during unpickling. Only load data you trust or " \
+              "update torch to 1.13.0+")
+        checkpoint = th.load(os.path.join(model_path, 'model.bin'), map_location='cpu')
+    else:
+        checkpoint = th.load(os.path.join(model_path, 'model.bin'),
+                             map_location='cpu',
+                             weights_only=True)
     if 'gnn' in checkpoint and gnn_model is not None:
         gnn_model.load_state_dict(checkpoint['gnn'])
     if 'embed' in checkpoint and embed_layer is not None:
@@ -247,7 +272,16 @@ def load_sparse_embeds(model_path, embed_layer):
 
     if len(embed_layer.sparse_embeds) > 0:
         for ntype, sparse_emb in embed_layer.sparse_embeds.items():
-            emb = th.load(os.path.join(model_path, f'{ntype}_sparse_emb.pt'))
+            if th.__version__ < "1.13.0":
+                print("WARNING: torch.load() uses pickle module implicitly, " \
+                    "which is known to be insecure. It is possible to construct " \
+                    "malicious pickle data which will execute arbitrary code " \
+                    "during unpickling. Only load data you trust or " \
+                    "update torch to 1.13.0+")
+                emb = th.load(os.path.join(model_path, f'{ntype}_sparse_emb.pt'))
+            else:
+                emb = th.load(os.path.join(model_path, f'{ntype}_sparse_emb.pt'),
+                              weights_only=True)
             # write sparse_emb back in a iterative way
             batch_size = 10240
             # TODO: dgl.distributed.DistEmbedding should provide emb.shape
@@ -269,7 +303,13 @@ def load_opt_state(model_path, dense_opts, sparse_opts):
         sparse_opts: list of optimizers
             Optimizer for sparse emb layer
     """
+    if th.__version__ < "1.13.0":
+        print("WARNING: torch.load() uses pickle module implicitly, " \
+            "which is known to be insecure. It is possible to construct " \
+            "malicious pickle data which will execute arbitrary code " \
+            "during unpickling. Only load data you trust")
     checkpoint = th.load(os.path.join(model_path, 'optimizers.bin'))
+
     assert len(dense_opts) == 1, "Currently, we only support one dense optimizer."
     dense_opts[0].load_state_dict(checkpoint['dense'])
     # TODO(zhengda) we need to change DGL to make it work.
