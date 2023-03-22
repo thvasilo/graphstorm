@@ -46,7 +46,6 @@ def prepare_batch_input(g, input_nodes,
         feat_name = None if feat_field is None else \
             [feat_field] if isinstance(feat_field, str) \
             else feat_field[ntype] if ntype in feat_field else None
-
         if feat_name is not None:
             # concatenate multiple features together
             feat[ntype] = th.cat([g.nodes[ntype].data[fname][nid].to(dev) \
@@ -365,7 +364,6 @@ class GSgnnEdgeInferData(GSgnnEdgeData):
             self._eval_etypes = g.canonical_etypes
         # test_mask exists
         for canonical_etype in self.eval_etypes:
-            print(canonical_etype)
             if 'test_mask' in g.edges[canonical_etype].data:
                 test_idx = dgl.distributed.edge_split(
                     g.edges[canonical_etype].data['test_mask'],
