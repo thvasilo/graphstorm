@@ -1,3 +1,7 @@
+"""
+A script that can be used to generate Docker compose files
+that can emulate running SageMaker partitioning jobs locally.
+"""
 from typing import Dict
 import argparse
 import sys
@@ -12,6 +16,10 @@ def parse_args(args):
     parser.add_argument("--output-data-s3", required=True)
     parser.add_argument("--num-parts", required=True, type=int)
     parser.add_argument("--region", required=True)
+    parser.add_argument("--skip-partitioning", required=False, action='store_true')
+    parser.add_argument("--partition-algorithm", required=False, default='metis', choices=['metis', 'random'])
+    parser.add_argument("--metadata-filename", required=False, default="metadata.json")
+    parser.add_argument("--log-level", required=False, default='INFO',)
     parser.add_argument("--image", required=False, default='graphstorm-dev:v1-0.0.0',
         help="Local image name and tag that we will use for the containers.")
 
@@ -29,14 +37,21 @@ if __name__ == "__main__":
         inner_host_list = [f'algo-{i}' for i in range(1, world_size+1)]
         quoted_host_list = ', '.join(f'"{host}"' for host in inner_host_list)
         host_list = f'[{quoted_host_list}]'
+        skip_partitioning = 'true' if args.skip_partitioning else 'false'
         return {
                 'image': args.image,
                 'container_name': f'algo-{instance_idx}',
                 'hostname': f'algo-{instance_idx}',
                 'networks': ['mpi'],
-                'command': f'python3 sagemaker_parmetis.py --graph-data-s3 "{args.graph_data_s3}" --num-parts {args.num_parts} --output-data-s3 "{args.output_data_s3}"',
+                'command': (
+                    f'python3 -u sagemaker_partition.py --skip-partitioning {skip_partitioning} '
+                    f'--graph-data-s3 "{args.graph_data_s3}" --partition-algorithm {args.partition_algorithm} '
+                    f'--num-parts {args.num_parts} --output-data-s3 "{args.output_data_s3}" '
+                    f'--log-level {args.log_level} --metadata-filename {args.metadata_filename}'
+                ),
                 'environment':
                     {'SM_TRAINING_ENV': f'{{"hosts": {host_list}, "current_host": "algo-{instance_idx}"}}',
+                    'RANK': instance_idx,
                     'WORLD_SIZE': world_size,
                     'MASTER_ADDR': 'algo-1',
                     'AWS_REGION': args.region},
@@ -48,5 +63,10 @@ if __name__ == "__main__":
 
     compose_dict['services'] = service_dicts
 
-    with open(f'docker-compose-{args.graph_name}-{args.num_instances}workers-{args.num_parts}parts.yml', 'w') as f:
+    filename = (
+        f'docker-compose-{args.graph_name}-'
+        f'{args.num_instances}workers-{args.num_parts}parts-'
+        f'{args.partition_algorithm}.yml')
+
+    with open(filename, 'w', encoding='utf-8') as f:
         yaml.dump(compose_dict, f)

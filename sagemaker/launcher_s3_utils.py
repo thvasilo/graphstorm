@@ -1,6 +1,7 @@
 """
 Utility functions for working with S3.
 """
+import logging
 from typing import List
 
 import boto3
@@ -32,6 +33,11 @@ def determine_byte_size_on_s3(bucket: str, prefix: str, s3_boto_client=None) -> 
     """
     Returns the total byte size under all files under a common prefix.
     """
+    if prefix.startswith("s3://"):
+        logging.warning(
+            "Key %s looks like an S3 URI, stripping its prefix to get data size.",
+            prefix)
+        prefix = prefix.replace(f"s3://{bucket}", "")
     s3_boto_client = boto3.client('s3') if s3_boto_client is None else s3_boto_client
     paginator = s3_boto_client.get_paginator('list_objects_v2')
     pages = paginator.paginate(Bucket=bucket, Prefix=prefix)

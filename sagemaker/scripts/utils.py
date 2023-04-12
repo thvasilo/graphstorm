@@ -4,9 +4,32 @@
 import os
 import time
 import shutil
+import subprocess
 
 from sagemaker.s3 import S3Downloader
 from sagemaker.s3 import S3Uploader
+
+def run(launch_cmd, state_q, env=None):
+    """ Running cmd using shell
+
+    Parameters
+    ----------
+    launch_cmd: str
+        cmd to launch
+    state_q: queue.Queue()
+        A queue used to return execution result (success or failure)
+    env: dict
+        System environment. If None, subprocess will use the inherited one.
+    """
+    try:
+        subprocess.check_call(launch_cmd, shell=False, env=env)
+        state_q.put(0)
+    except subprocess.CalledProcessError as err:
+        print(f"Called process error {err}")
+        state_q.put(err.returncode)
+    except Exception as err: # pylint: disable=broad-except
+        print(f"Called process error {err}")
+        state_q.put(-1)
 
 def barrier_master(client_list, world_size):
     """ Master barrier, called by host_rank == 0
