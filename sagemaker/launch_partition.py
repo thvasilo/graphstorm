@@ -6,8 +6,8 @@ import json
 import logging
 import boto3 # pylint: disable=import-error
 
-import aws_utils
-import s3_utils
+import launcher_aws_utils as aws_utils
+import launcher_s3_utils as s3_utils
 
 from sagemaker.pytorch.estimator import PyTorch
 from sagemaker.s3 import S3Downloader
@@ -63,10 +63,14 @@ def run_job(input_args, image):
         graph_name = metadata_dict["graph_name"]
 
     print(f"Graph name during launch: {graph_name}")
+    skip_partitioning_str = "true" if input_args.skip_partitioning else "false"
     params = {"graph-data-s3": graph_data_s3,
               "metadata-filename": metadata_filename,
               "num-parts": num_parts,
-              "output-data-s3": output_data_s3,}
+              "output-data-s3": output_data_s3,
+              "skip-partitioning": skip_partitioning_str,
+              "log-level": input_args.log_level,
+              "partition-algorithm": input_args.partition_algorithm,}
 
     print(f"Parameters {params}")
 
@@ -81,7 +85,7 @@ def run_job(input_args, image):
         s3_input_bucket,
         s3_input_key,
         boto_session.client(service_name="s3", region_name=region))
-    input_total_size_in_gb = total_byte_size // (1024*1024*1024)
+    input_total_size_in_gb = max(1, total_byte_size // (1024*1024*1024))
     max_allowed_volume_size = aws_utils.get_max_volume_size_for_sagemaker('training', region)
     # Heuristic, create volume size relative to input
     # Assuming compressed Parquet input, csv intermediate output
@@ -104,6 +108,8 @@ def run_job(input_args, image):
         )
 
     est = PyTorch(
+        disable_profiler=True,
+        debugger_hook_config=False,
         entry_point=os.path.basename(entry_point),
         source_dir=os.path.dirname(entry_point),
         image_uri=container_image_uri,
@@ -121,7 +127,7 @@ def run_job(input_args, image):
         volume_size=required_gb_per_instance
     )
 
-    est.fit(job_name=sm_task_name, wait=False)
+    est.fit(job_name=sm_task_name, wait=input_args.wait_for_job)
 
 def parse_args():
     """ Add arguments
@@ -142,10 +148,13 @@ def parse_args():
         default="us-east-1",
         help="Region to launch the task")
     parser.add_argument("--entry-point", type=str,
-        default="graphstorm/sagemaker/scripts/sagemaker_parmetis.py",
-        help="PATH-TO graphstorm/sagemaker/scripts/sagemaker_parmetis.py")
+        default="graphstorm/sagemaker/scripts/sagemaker_partition.py",
+        help="PATH-TO graphstorm/sagemaker/scripts/sagemaker_partition.py")
     parser.add_argument("--task-name", type=str,
         default=None, help="User defined SageMaker task name")
+    parser.add_argument("--wait-for-job", action='store_true',
+        help="When set will wait for the job to finish before returning")
+
 
     # task specific
     parser.add_argument("--graph-data-s3", type=str,
@@ -153,6 +162,10 @@ def parse_args():
     parser.add_argument("--metadata-filename", type=str,
         default="metadata.json", help="file name of metadata config file")
     parser.add_argument("--num-parts", type=int, help="Number of partitions")
+    parser.add_argument("--partition-algorithm", type=str, default='metis',
+        help="Partition algorithm to use.", choices=['metis', 'random'])
+    parser.add_argument("--skip-partitioning", action='store_true',
+        help="When set, we skip the partitioning step. Partition assignments need to exist on S3.")
     parser.add_argument("--output-data-s3", type=str,
         help="S3 location to store the partitioned graph")
     parser.add_argument("--volume-size", type=int, default=None)
@@ -161,11 +174,10 @@ def parse_args():
     parser.add_argument('--log-level', default='INFO',
         type=str, choices=['DEBUG', 'INFO', 'WARNING', 'CRITICAL', 'FATAL'])
 
-    return parser
+    return parser.parse_args()
 
 if __name__ == "__main__":
-    arg_parser = parse_args()
-    args = arg_parser.parse_args()
+    args = parse_args()
     print(args)
 
 
