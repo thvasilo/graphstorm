@@ -222,7 +222,7 @@ def main():
         logging.debug("Connected")
         client_list = None
 
-    # write ip list info into disk
+    # write ip list info to disk
     ip_list = []
     ip_list_path = os.path.join(tmp_data_path, 'ip_list.txt')
     with open(ip_list_path, 'w', encoding='utf-8') as f:
@@ -309,11 +309,15 @@ def main():
             # Signal to leader that we're done downloading partition assignments
             utils.barrier(sock)
 
+    s3_dglgraph_output = os.path.join(output_s3, "dist_graph")
+    dglgraph_output = os.path.join(tmp_data_path, "dist_graph")
+    logging.debug("Worker %s s3_dglgraph_output: %s",
+            host_rank, s3_dglgraph_output)
     if host_rank == 0:
         state_q = queue.Queue()
         def data_dispatch_step(partition_dir):
             # Build DistDGL graph
-            dglgraph_output = os.path.join(tmp_data_path, "dist_graph")
+
             build_dglgraph_task = launch_build_dglgraph(graph_data_path,
                 partition_dir,
                 ip_list_path,
@@ -326,28 +330,28 @@ def main():
             if err_code != 0:
                 raise RuntimeError("build dglgrah failed")
 
-            return dglgraph_output
-
         task_end = Event()
         thread = Thread(target=utils.keep_alive,
             args=(client_list, world_size, task_end),
             daemon=True)
         thread.start()
 
-        dglgraph_output = data_dispatch_step(local_partition_path)
+        data_dispatch_step(local_partition_path)
+
+        # Indicate we can stop sending keepalive messages
+        task_end.set()
+        # Ensure the keepalive thread has finished before closing sockets
+        thread.join()
+        # Close connections with workers
         utils.terminate_workers(client_list, world_size, task_end)
     else:
         # Block until dispatch_data finished
         # Listen to end command
         utils.wait_for_exit(sock)
 
-        dglgraph_output = os.path.join(tmp_data_path, "dist_graph")
-        s3_dglgraph_output = os.path.join(output_s3, "dist_graph")
-        logging.debug("Worker %s s3_dglgraph_output: %s",
-            host_rank, s3_dglgraph_output)
-        upload_file_to_s3(s3_dglgraph_output, dglgraph_output, sagemaker_session)
-
-        logging.info("Worker End")
+    # All instances (leader+workers) upload local DGL objects to S3
+    upload_file_to_s3(s3_dglgraph_output, dglgraph_output, sagemaker_session)
+    logging.info("Rank %s completed all tasks, exiting...", host_rank)
 
     sock.close()
 

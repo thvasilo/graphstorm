@@ -1,6 +1,6 @@
 """ sagemaker script utilities
 """
-
+import logging
 import os
 import time
 import shutil
@@ -25,10 +25,10 @@ def run(launch_cmd, state_q, env=None):
         subprocess.check_call(launch_cmd, shell=False, env=env)
         state_q.put(0)
     except subprocess.CalledProcessError as err:
-        print(f"Called process error {err}")
+        logging.error("Called process error %s", err)
         state_q.put(err.returncode)
     except Exception as err: # pylint: disable=broad-except
-        print(f"Called process error {err}")
+        logging.error("Called process error %s", err)
         state_q.put(-1)
 
 def barrier_master(client_list, world_size):
@@ -94,7 +94,7 @@ def keep_alive(client_list, world_size, task_end):
         for rank in range(1, world_size):
             client_list[rank].send(b"Dummy")
 
-    print("Exit")
+    logging.debug("keepalive thread exiting...")
 
 def terminate_workers(client_list, world_size, task_end):
     """ termiate all worker deamons.
@@ -112,7 +112,8 @@ def terminate_workers(client_list, world_size, task_end):
     for rank in range(1, world_size):
         client_list[rank].send(b"Done")
         msg = client_list[rank].recv(8)
-        print(f"Client {rank} exit {msg.decode()}")
+        logging.debug("Client %d exit %s",
+            rank, msg.decode())
 
     # close connections with clients
     for rank in range(1, world_size):
@@ -129,7 +130,7 @@ def wait_for_exit(master_sock):
     msg = master_sock.recv(8)
     while msg.decode() != "Done":
         msg = master_sock.recv(8)
-        print(msg.decode())
+        logging.debug(msg.decode())
     master_sock.send(b"Exit")
 
 def download_yaml(yaml_s3, yaml_file_name, local_path, sagemaker_session):
