@@ -30,6 +30,10 @@ mkdir -p code/graphstorm
 cp -r "${GSF_HOME}/python" code/graphstorm/
 cp -r "${GSF_HOME}/sagemaker" code/graphstorm/sagemaker
 cp -r "${GSF_HOME}/docker/sagemaker/build_artifacts" build_artifacts
+cp "${GSF_HOME}/docker/.dockerignore" code/.dockerignore
+
+# Copy over local DGL
+rsync -a "${GSF_HOME}/../dgl/" code/dgl --exclude='.git' || true
 
 # Build OSS docker for EC2 instances that an pull ECR docker images
 DOCKER_FULLNAME="${IMAGE_NAME}:${TAG}"

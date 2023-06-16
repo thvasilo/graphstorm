@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 
 # process argument 1: graphstorm home folder
 if [ -z "$1" ]; then
@@ -35,7 +36,7 @@ cp -r $GSF_HOME"/training_scripts" $GSF_HOME"/docker/code/training_scripts"
 DOCKER_FULLNAME="${IMAGE_NAME}:${TAG}"
 
 echo "Build a local docker image ${DOCKER_FULLNAME}"
-docker build --no-cache -f $GSF_HOME"/docker/Dockerfile.local" . -t $DOCKER_FULLNAME
+docker build -f $GSF_HOME"/docker/Dockerfile.local" . -t $DOCKER_FULLNAME
 
 # remove the temporary code folder
 rm -rf $GSF_HOME"/docker/code"

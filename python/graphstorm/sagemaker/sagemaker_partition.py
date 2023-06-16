@@ -226,6 +226,11 @@ def run_partition(job_config: PartitionJobConfig):
         level=getattr(logging, job_config.log_level.upper(), None),
         format=f'{current_host}: %(asctime)s - %(levelname)s - %(message)s'
         )
+    logging.getLogger('boto3').setLevel(logging.CRITICAL)
+    logging.getLogger('botocore').setLevel(logging.CRITICAL)
+    logging.getLogger('s3transfer').setLevel(logging.CRITICAL)
+    logging.getLogger('urllib3').setLevel(logging.CRITICAL)
+
 
     boto_session = boto3.session.Session(region_name=os.environ['AWS_REGION'])
     sagemaker_session = sagemaker.session.Session(boto_session=boto_session)
@@ -346,7 +351,7 @@ def run_partition(job_config: PartitionJobConfig):
     logging.debug("Worker %s s3_dglgraph_output: %s",
             host_rank, s3_dglgraph_output)
     if host_rank == 0:
-        state_q = queue.Queue()
+        state_q = queue.Queue()  # type: queue.Queue
         def data_dispatch_step(partition_dir):
             # Build DistDGL graph
 
@@ -362,20 +367,20 @@ def run_partition(job_config: PartitionJobConfig):
             if err_code != 0:
                 raise RuntimeError("build dglgrah failed")
 
-        task_end = Event()
-        thread = Thread(target=utils.keep_alive,
-            args=(client_list, world_size, task_end),
+        keepalive_task_end = Event()
+        keepalive_thread = Thread(target=utils.keep_alive,
+            args=(client_list, world_size, keepalive_task_end),
             daemon=True)
-        thread.start()
+        keepalive_thread.start()
 
         data_dispatch_step(local_partition_path)
 
         # Indicate we can stop sending keepalive messages
-        task_end.set()
+        keepalive_task_end.set()
         # Ensure the keepalive thread has finished before closing sockets
-        thread.join()
+        keepalive_thread.join()
         # Close connections with workers
-        utils.terminate_workers(client_list, world_size, task_end)
+        utils.terminate_workers(client_list, world_size, keepalive_task_end)
     else:
         # Block until dispatch_data finished
         # Listen to end command

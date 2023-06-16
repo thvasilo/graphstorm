@@ -73,8 +73,7 @@ def run_job(input_args, image):
     est = PyTorch(
         disable_profiler=True,
         debugger_hook_config=False,
-        entry_point=os.path.basename(entry_point),
-        source_dir=os.path.dirname(entry_point),
+        entry_point=entry_point,
         image_uri=container_image_uri,
         role=role,
         instance_count=instance_count,

@@ -218,11 +218,11 @@ def run_train(args, unknownargs):
         barrier_master(client_list, world_size)
 
         # launch a thread to send keep alive message to all workers
-        task_end = Event()
-        thread = Thread(target=keep_alive,
-            args=(client_list, world_size, task_end),
+        keepalive_task_end = Event()
+        keepalive_thread = Thread(target=keep_alive,
+            args=(client_list, world_size, keepalive_task_end),
             daemon=True)
-        thread.start()
+        keepalive_thread.start()
 
         try:
             # launch distributed training here
@@ -241,7 +241,12 @@ def run_train(args, unknownargs):
         except RuntimeError as e:
             print(e)
             err_code = -1
-        terminate_workers(client_list, world_size, task_end)
+        # Indicate we can stop sending keepalive messages
+        keepalive_task_end.set()
+        # Ensure the keepalive thread has finished before closing sockets
+        keepalive_thread.join()
+        # Close connections with workers
+        terminate_workers(client_list, world_size, keepalive_task_end)
         print("Master End")
     else:
         barrier(sock)
