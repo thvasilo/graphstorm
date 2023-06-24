@@ -3,40 +3,33 @@
 set -euo pipefail
 # Usage help
 if [ -b "${1-}" ] && [ "$1" == "--help" ] || [ -b "${1-}" ] && [ "$1" == "-h" ]; then
-    echo "Usage: docker/push_container.sh <container-tag>"
+    echo "Usage: docker/push_sm_container.sh <image-name>"
     echo "Optionally provide the image name, tag, region and account number for the ecr repository"
-    echo "For example: docker/push_container.sh graphstorm sm us-west-2 1234567890"
+    echo "For example: docker/push_sm_container.sh graphstorm-sm us-west-2 1234567890"
     exit 1
 fi
 
-latest_version="sm" # needs to be updated anytime there's a new version
+version=`git rev-parse --short HEAD`
 
 # TODO: Use proper flags for these arguments instead of relying on position
 # Set the image name/repository
 if [ -b "${1-}" ]; then
     image="$1"
 else
-    image='graphstorm'
-fi
-
-# Set the image tag/version
-if [ -n "${2-}" ]; then
-    version="$2"
-else
-    version=${latest_version}
+    image='graphstorm-sm'
 fi
 
 # Get the region defined in the current configuration (default to us-west-2 if none defined)
-if [ -n "${3-}" ]; then
-    region="$3"
+if [ -n "${2-}" ]; then
+    region="$2"
 else
     region=$(aws configure get region)
     region=${region:-us-west-2}
 fi
 
 # Get the account number associated with the current IAM credentials
-if [ -n "${4-}" ]; then
-    account=$4
+if [ -n "${3-}" ]; then
+    account=$3
 else
     account=$(aws sts get-caller-identity --query Account --output text)
 fi
@@ -69,7 +62,5 @@ docker tag ${image}:${suffix} ${fullname}
 
 docker push ${fullname}
 
-if [ ${version} = ${latest_version} ]; then
-    docker tag ${image}:${suffix} ${latest_tag}
-    docker push ${latest_tag}
-fi
+docker tag ${image}:${suffix} ${latest_tag}
+docker push ${latest_tag}

@@ -12,31 +12,26 @@ fi
 
 # process argument 2: docker image name, default is graphstorm
 if [ -z "$2" ]; then
-    IMAGE_NAME="graphstorm"
+    IMAGE_NAME="graphstorm-sm"
 else
     IMAGE_NAME="$2"
-fi
-
-# process argument 3: image's tag name, default is sm
-if [ -z "$3" ]; then
-    TAG="sm"
-else
-    TAG="$3"
 fi
 
 # Copy scripts and tools codes to the docker folder
 # TODO: use pip install later
 mkdir -p code/graphstorm
 cp -r "${GSF_HOME}/python" code/graphstorm/
+cp -r "${GSF_HOME}/setup.py" code/graphstorm/
 cp -r "${GSF_HOME}/sagemaker" code/graphstorm/sagemaker
 cp -r "${GSF_HOME}/docker/sagemaker/build_artifacts" build_artifacts
-cp "${GSF_HOME}/docker/.dockerignore" code/.dockerignore
 
-# Copy over local DGL
+GIT_COMMIT=`git rev-parse --short HEAD`
+
+# Copy over local DGL, if one exists
 rsync -a "${GSF_HOME}/../dgl/" code/dgl --exclude='.git' || true
 
 # Build OSS docker for EC2 instances that an pull ECR docker images
-DOCKER_FULLNAME="${IMAGE_NAME}:${TAG}"
+DOCKER_FULLNAME="${IMAGE_NAME}:${GIT_COMMIT}"
 
 echo "Build a sagemaker docker image ${DOCKER_FULLNAME}"
 docker build -f $GSF_HOME"docker/sagemaker/Dockerfile.sm" . -t $DOCKER_FULLNAME

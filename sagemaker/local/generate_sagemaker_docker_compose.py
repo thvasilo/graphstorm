@@ -254,7 +254,7 @@ if __name__ == "__main__":
                     },
                 'ports': [22],
                 'working_dir': '/opt/ml/code/',
-                'shm_size': '8gb' # See https://github.com/pytorch/pytorch/issues/2244#issuecomment-318864552
+                'shm_size': '16gb' # See https://github.com/pytorch/pytorch/issues/2244#issuecomment-318864552
             }
 
         if needs_gpu:
