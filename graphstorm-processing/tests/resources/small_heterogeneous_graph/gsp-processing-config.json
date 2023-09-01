@@ -1,0 +1,86 @@
+{
+    "version" : "v1.0",
+    "graph" :
+      {
+        "edges" : [
+          {
+            "data": {
+                "format": "csv",
+                "files": ["edges/movie-included_in-genre.csv"],
+                "separator" : ","
+            },
+            "source" : {"column": "~from", "type": "movie"},
+            "relation" : {"type": "included_in"},
+            "dest" : {"column": "~to", "type": "genre"}
+          },
+          {
+            "data": {
+                "format": "csv",
+                "files": ["edges/user-rated-movie.csv"],
+                "separator" : ","
+            },
+            "source" : {"column": "~from", "type": "user"},
+            "relation" : {"type": "rated"},
+            "dest" : {"column": "~to", "type": "movie"}
+          },
+          {
+            "data": {
+                "format": "csv",
+                "files": ["edges/director-directed-movie.csv"],
+                "separator" : ","
+            },
+            "source" : {"column": "~from", "type": "director"},
+            "relation" : {"type": "directed"},
+            "dest" : {"column": "~to", "type": "movie"}
+          }
+        ],
+        "nodes" : [
+          {
+            "data": {
+                "format": "csv",
+                "files": ["nodes/genre.csv"],
+                "separator" : ","
+            },
+            "column" : "~id",
+            "type": "genre"
+          },
+          {
+            "data": {
+                "format": "csv",
+                "files": ["nodes/movie.csv"],
+                "separator" : ","
+            },
+            "column" : "~id",
+            "type": "movie"
+          },
+          {
+            "data": {
+                "format": "csv",
+                "files": ["nodes/user.csv"],
+                "separator" : ","
+            },
+            "column" : "~id",
+            "type": "user",
+            "labels" : [
+                {
+                  "column": "gender",
+                  "type": "classification",
+                  "split_rate" : {
+                    "train": 0.8,
+                    "val": 0.1,
+                    "test": 0.1
+                  }
+                }
+            ],
+            "features": [
+                {
+                    "column": "age",
+                    "transformation": {
+                        "name": "no-op"
+                    }
+                }
+            ]
+          }
+        ]
+      }
+  }
