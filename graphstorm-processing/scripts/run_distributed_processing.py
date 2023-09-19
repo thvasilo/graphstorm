@@ -146,15 +146,14 @@ if __name__ == "__main__":
         if s3_input_prefix.endswith("/")
         else f"{s3_input_prefix}/{args.config_filename}"
     )
-    s3_input_bucket, s3_input_key = s3_utils
+    s3_input_bucket = s3_input_prefix.split("/")[2]
+    s3_input_key = s3_input_prefix.split("/", maxsplit=3)[3]
 
     if not s3_output_prefix:
-        s3_bucket = s3_input_prefix.split("/")[2]
-        s3_output_prefix = (
-            f"s3://{s3_bucket}/graphstorm-distributed-graph-processing/output/{processing_job_name}"
-        )
+        s3_output_prefix = f"s3://{s3_input_bucket}/gs-processing/output/{processing_job_name}"
 
     s3_output_bucket = s3_output_prefix.split("/")[2]
+
     print(
         "Creating SageMaker Processing job for train"
         f" config in {s3_train_config} and outputs to {s3_output_prefix}"
