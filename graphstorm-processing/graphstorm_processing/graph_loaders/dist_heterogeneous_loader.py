@@ -185,17 +185,20 @@ class DistHeterogeneousGraphLoader(HeterogeneousGraphLoader):
                 self.timers["create_node_id_maps_from_edges"] = perf_counter() - id_map_start_time
 
             node_start_time = perf_counter()
+            logging.info("Processing node data...")
             metadata_dict["node_data"] = self.process_node_data(node_configs)
             self.timers["process_node_data"] = perf_counter() - node_start_time
         else:
             # In this case no node files exist so we create all node mappings from the edge files
             id_map_start_time = perf_counter()
             missing_node_types = self._get_missing_node_types(edge_configs, [])
+            logging.info("No node files included, extracting node ids from edge files...")
             self.create_node_id_maps_from_edges(edge_configs, missing_node_types)
             self.timers["create_node_id_maps_from_edges"] = perf_counter() - id_map_start_time
             metadata_dict["node_data"] = {}
 
         edges_start_time = perf_counter()
+        logging.info("Processing edge data...")
         edge_data_dict, edges_dict = self.process_edge_data(edge_configs)
         self.timers["process_edge_data"] = perf_counter() - edges_start_time
         metadata_dict["edge_data"] = edge_data_dict
@@ -894,7 +897,7 @@ class DistHeterogeneousGraphLoader(HeterogeneousGraphLoader):
                     node_data_dict[node_type] = node_type_metadata_dicts
             nodes_df.unpersist()
 
-        logging.info("Finished processing node features")
+        logging.info("Finished processing node data")
         return node_data_dict
 
     def _process_node_features(
@@ -1130,14 +1133,20 @@ class DistHeterogeneousGraphLoader(HeterogeneousGraphLoader):
         # TODO: We need to repartition to ensure same file count for
         # all downstream DataFrames, but it causes a full shuffle.
         # Can it be avoided?
-        edge_df_with_int_ids = edge_df_with_int_ids.drop(src_col, dst_col).repartition(
-            self.num_output_files
+        edge_df_with_int_ids = (
+            edge_df_with_int_ids.drop(src_col, dst_col)
+            .repartition(self.num_output_files, F.col("src_int_id"))
+            .orderBy("src_int_id", "dst_int_id")
         )
         edge_df_with_int_ids_and_all_features = edge_df_with_int_ids
         edge_df_with_only_int_ids = edge_df_with_int_ids.select(["src_int_id", "dst_int_id"])
 
         edge_structure_path = os.path.join(self.output_prefix, f"edges/{edge_type}")
+        edge_plus_structure_path = os.path.join(
+            self.output_prefix, f"edges_with_all_features/{edge_type}"
+        )
         logging.info("Writing edge structure for edge type %s...", edge_type)
+        # path_list = self._write_df(edge_df_with_int_ids_and_all_features, edge_plus_structure_path)
         path_list = self._write_df(edge_df_with_only_int_ids, edge_structure_path)
 
         if self.add_reverse_edges:
@@ -1210,12 +1219,12 @@ class DistHeterogeneousGraphLoader(HeterogeneousGraphLoader):
         # iterates over entries of the edge section in the export config
         edge_data_dict = {}
         edges_dict = {}
-        logging.info("Processing edge data...")
         self.graph_info["etype_label"] = []
         self.graph_info["etype_label_property"] = []
         for edge_config in edge_configs:
             read_edges_start = perf_counter()
             edges_df = self._read_edge_df(edge_config)
+            logging.info("edges_df columns after _read_edge_df: %s", edges_df.columns)
             # TODO: Assert columns from config exist in the edge df
 
             # This will throw an "already cached" warning if
@@ -1237,6 +1246,9 @@ class DistHeterogeneousGraphLoader(HeterogeneousGraphLoader):
                 edges_df, edge_config
             )
             self.timers["read_edges_and_write_structure"] += perf_counter() - read_edges_start
+            logging.info(
+                "edges_df columns after read_edges_and_write_structure : %s", edges_df.columns
+            )
 
             edges_metadata_dict = {
                 "format": {"name": FORMAT_NAME, "delimiter": DELIMITER},
@@ -1583,9 +1595,54 @@ class DistHeterogeneousGraphLoader(HeterogeneousGraphLoader):
 
         rng = default_rng(seed=seed)
 
+        # Anchor-node-based sampling
+        anchor_column = "src_int_id"
+        dst_id_column = "dst_int_id"
+
+        # First we sample the anchor nodes by taking all unique node ids, sampling a fraction,
+        # and adding an annotation column "is_anchor_node"=1
+        nodes_with_edges = input_df.select(anchor_column).distinct()
+
+        # nodes_with_edges_count = nodes_with_edges.count()
+        num_anchor_nodes = 10**8  # int(nodes_with_edges_count * 0.25)
+
+        anchor_nodes = nodes_with_edges.sample(
+            fraction=num_anchor_nodes / nodes_with_edges.count()
+        ).withColumn("is_anchor_node", F.lit(1))
+
+        logging.info("Selected %d anchor nodes", anchor_nodes.count())
+
+        # Then we left join on the anchor column (src) with the existing edges to annotate all edges
+        # that have an anchor node as their src
+        # The edges with an anchor src node will have is_anchor_node==1 while the rest will have is_anchor_node=null
+        edges_with_anchor_nodes = input_df.join(anchor_nodes, anchor_column, how="left")
+
+        # Then we select one edge per anchor node, by filtering to only rows that have anchor node src,
+        # then grouping by the src(anchor) id, and selecting the max id out of all the dst nodes
+        # and we annotate those edges with is_anchor_edge=1
+        single_anchor_node_edges = (
+            edges_with_anchor_nodes.filter("is_anchor_node = 1")
+            .groupBy(anchor_column)
+            .max(dst_id_column)
+            .withColumnRenamed(f"max({dst_id_column})", dst_id_column)
+            .withColumn("is_anchor_edge", F.lit(1))
+        )
+
+        logging.info("Selected %d anchor edges", single_anchor_node_edges.count())
+
+        # Then we left join again with the initial dataset using the edge id as a composite
+        # key. This will add the is_anchor_node column to all edges
+        input_df_with_anchor_edges = input_df.join(
+            single_anchor_node_edges, on=[anchor_column, dst_id_column], how="left"
+        )
+
+        # We will use the is_anchor_edge column as indicator of whether to include an edge in the split
+        label_column = "is_anchor_edge"
+
         # We use multinomial sampling to create a one-hot
         # vector indicating train/test/val membership
         def multinomial_sample(label_col: str) -> Sequence[int]:
+            # We only want to include labeled rows in the splits
             if label_col in {"", "None", "NaN", None}:
                 return [0, 0, 0]
             return rng.multinomial(1, split_list).tolist()
@@ -1595,9 +1652,17 @@ class DistHeterogeneousGraphLoader(HeterogeneousGraphLoader):
         # TODO: Use PandasUDF and check if it is faster than UDF
         split_group = F.udf(multinomial_sample, ArrayType(IntegerType()))
         # Convert label col to string and apply UDF
-        # to create one-hot vector indicating train/test/val membership
+        # to create one-hot vector indicating train/val/test membership
         input_col = F.col(label_column).astype("string") if label_column else F.lit("dummy")
-        int_group_df = input_df.select(split_group(input_col).alias(group_col_name))
+        input_df = input_df_with_anchor_edges
+        # Finally we create a DF with num_edges rows, each value is a 0/1 triplet
+        # All edges that have is_anchor_edge==null will have the value [0, 0, 0], excluding them from all sets
+        # The anchor edges enter the split and get a one-hot value assigned from multinomial_sample()
+        int_group_df = (
+            input_df.repartition(self.num_output_files, F.col("src_int_id"))
+            .orderBy("src_int_id", "dst_int_id")
+            .select(split_group(input_col).alias(group_col_name))
+        )
 
         def create_metadata_entry(path_list):
             return {"format": {"name": FORMAT_NAME, "delimiter": DELIMITER}, "data": path_list}
@@ -1605,20 +1670,30 @@ class DistHeterogeneousGraphLoader(HeterogeneousGraphLoader):
         def write_mask(kind: str, mask_df: DataFrame) -> Sequence[str]:
             out_path_list = self._write_df(
                 mask_df.select(F.col(f"{kind}_mask").cast(ByteType()).alias(f"{kind}_mask")),
-                f"{output_path}-{kind}-mask",
+                f"{output_path}-{kind}_mask",
+            )
+            return out_path_list
+
+        def write_mask_and_others(kind: str, mask_df: DataFrame) -> Sequence[str]:
+            out_path_list = self._write_df(
+                mask_df.withColumn(f"{kind}_mask", (F.col(f"{kind}_mask").cast(ByteType()))),
+                f"{output_path}-{kind}-mask-and-others",
             )
             return out_path_list
 
         train_mask_df = int_group_df.select(F.col(group_col_name)[0].alias("train_mask"))
         out_path_list = write_mask("train", train_mask_df)
+        # out_path_list = write_mask_and_others("train", train_mask_df)
         split_metadata["train_mask"] = create_metadata_entry(out_path_list)
 
         val_mask_df = int_group_df.select(F.col(group_col_name)[1].alias("val_mask"))
         out_path_list = write_mask("val", val_mask_df)
+        # out_path_list = write_mask_and_others("val", val_mask_df)
         split_metadata["val_mask"] = create_metadata_entry(out_path_list)
 
         test_mask_df = int_group_df.select(F.col(group_col_name)[2].alias("test_mask"))
         out_path_list = write_mask("test", test_mask_df)
+        # out_path_list = write_mask_and_others("test", test_mask_df)
         split_metadata["test_mask"] = create_metadata_entry(out_path_list)
 
         return split_metadata

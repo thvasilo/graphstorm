@@ -17,7 +17,7 @@ This module is used to determine row counts for Parquet files.
 """
 import logging
 import os
-from typing import Dict, List, Sequence
+from typing import Any, Dict, List, Sequence
 
 from joblib import Parallel, delayed
 import pyarrow.parquet as pq
@@ -404,3 +404,176 @@ class ParquetRowCounter:
                     )
 
         return all_match
+
+
+def collect_metadata_info(
+    graph_name: str,
+    task: str,
+    output_prefix: str,
+    edge_type_list: List[str],
+    edge_types_with_data: List[str],
+    node_type_list: List[str],
+    node_types_with_data: List[str],
+    edge_counts: Dict[str, int],
+    node_counts: Dict[str, int],
+) -> dict:
+    """Given a set of files in DistDGL chunked format, creates the corresponding
+    metadata dict needed by GSProcessing repartitioning and DGL DistPartitioning.
+
+    Parameters
+    ----------
+    graph_name : str
+        The name of the graph
+    task : str
+        The graph learning task the data was prepared for
+    output_prefix : str
+        The prefix under which the output data was created.
+    edge_type_list : list[str]
+        A list of all edge types, including reverse edges.
+    edge_types_with_data : list[str]
+        A list of the edge types that have features/labels associated.
+    node_type_list : list[str]
+        A list of all node types
+    node_types_with_data : list[str]
+        A list of the nodes types that have features/labels associated.
+    edge_counts : dict[str, int]
+        A dictionary from edge type to edge count
+    node_counts : dict[str, int]
+        A dictionary from node type to node count
+
+    Returns
+    -------
+    dict
+        The metadata dict that can be written as JSON to be used
+        with re-partitioning and DistPartitioning
+    """
+
+    for edge_type in edge_type_list:
+        if "rev" in edge_type:
+            parts = edge_type.split(":")
+            assert (
+                f"{parts[2]}:{parts[1][4:]}:{parts[0]}" in edge_type_list
+            ), "Each edge type needs a corresponding reverse"
+
+    metadata_dict: dict[str, Any] = {}
+
+    metadata_dict["graph_name"] = graph_name
+
+    bucket, key_prefix = s3_utils.extract_bucket_and_key(output_prefix)
+
+    # Assign node and edge types
+    metadata_dict["edge_type"] = edge_type_list
+    metadata_dict["node_type"] = node_type_list
+
+    def remove_prefix_from_files(prefix_to_remove: str, object_key_list: List[str]) -> List[str]:
+        filtered_key_list = []
+        for key in object_key_list:
+            chars_to_skip = len(prefix_to_remove)
+            key_without_prefix = key[chars_to_skip:].lstrip("/")
+            filtered_key_list.append(key_without_prefix)
+
+        return filtered_key_list
+
+    def populate_structure_dict(type_list: List[str], sub_path: str) -> Dict[str, dict]:
+        assert sub_path
+        structure_dict: Dict[str, Dict] = {}
+        for cur_type in type_list:
+            type_dict: Dict[str, Any] = {}
+            type_dict["format"] = {"name": "parquet", "delimiter": ""}
+
+            # TODO: This op is slow, so collect files in parallel beforehand
+            files_for_type = s3_utils.list_s3_objects(
+                bucket, f"{key_prefix}/{sub_path}/{cur_type}/"
+            )
+            files_for_structure = [
+                filepath
+                for filepath in remove_prefix_from_files(key_prefix, files_for_type)
+                if filepath.endswith(".parquet") and "_temporary" not in filepath
+            ]
+            type_dict["data"] = files_for_structure
+
+            structure_dict[cur_type] = type_dict
+
+        return structure_dict
+
+    edge_types_with_labels = []
+    node_types_with_labels = []
+    etype_label_properties = []
+    ntype_label_properties = []
+
+    def populate_data_dict(type_with_data_list: List[str], sub_path: str) -> Dict[str, Dict]:
+        assert sub_path
+        data_dict: dict[str, dict] = {}
+        for cur_type in type_with_data_list:
+            data_dict[cur_type] = {}
+            # First get all files for current type
+            type_key_prefix = f"{key_prefix}/{sub_path}/{cur_type}-"
+            # TODO: This op is slow, so collect files in parallel beforehand
+            files_for_type = s3_utils.list_s3_objects(bucket, type_key_prefix)
+            # Then lets filter to only get one entry per feature/label
+            noprefix_filtered_files = remove_prefix_from_files(
+                type_key_prefix, [filepath for filepath in files_for_type if "SUCCESS" in filepath]
+            )
+
+            # Now we isolate the names from the filepaths
+            feature_name_list = []
+            for nopref_file in noprefix_filtered_files:
+                # With the prefix removed, we get filepaths like "{feature_name}/parquet/_SUCCESS"
+                # so we only want the first part
+                feature_name = nopref_file.split("/")[0]
+                if "label" in feature_name:
+                    # We know the labels are named as "label-{label_name}"
+                    feature_name = feature_name.split("-")[1]
+                    # We need this information for re-partitioning downstream
+                    if "edge" in sub_path:
+                        edge_types_with_labels.append(cur_type)
+                        etype_label_properties.append(feature_name)
+                    else:
+                        node_types_with_labels.append(cur_type)
+                        ntype_label_properties.append(feature_name)
+                feature_name_list.append(feature_name)
+
+            # Finally create one dict entry per feature/label
+            for feature in feature_name_list:
+                files_for_feature = [
+                    filepath
+                    for filepath in files_for_type
+                    if feature in filepath
+                    and filepath.endswith(".parquet")
+                    and "_temporary" not in filepath
+                ]
+                feature_dict: dict[str, Any] = {}
+                feature_dict["format"] = {"name": "parquet", "delimiter": ""}
+                feature_dict["data"] = remove_prefix_from_files(key_prefix, files_for_feature)
+
+                data_dict[cur_type][feature] = feature_dict
+
+        return data_dict
+
+    metadata_dict["edges"] = populate_structure_dict(edge_type_list, "edges")
+    metadata_dict["edge_data"] = populate_data_dict(edge_types_with_data, "edge_data")
+
+    metadata_dict["node_id_mappings"] = populate_structure_dict(node_type_list, "node_id_mappings")
+    metadata_dict["node_data"] = populate_data_dict(node_types_with_data, "node_data")
+
+    metadata_dict["num_edges_per_type"] = [
+        edge_counts[etype] for etype in metadata_dict["edge_type"]
+    ]
+    metadata_dict["num_nodes_per_type"] = [
+        node_counts[ntype] for ntype in metadata_dict["node_type"]
+    ]
+
+    graph_info: dict[str, Any] = {}
+    graph_info["num_node_ntype"] = node_counts
+    graph_info["num_edges_etype"] = edge_counts
+
+    graph_info["etype_label"] = edge_types_with_labels
+    graph_info["etype_label_property"] = etype_label_properties
+    graph_info["ntype_label"] = node_types_with_labels
+    graph_info["ntype_label_property"] = ntype_label_properties
+
+    graph_info["task_type"] = task
+
+    metadata_dict["graph_info"] = graph_info
+
+    return metadata_dict
