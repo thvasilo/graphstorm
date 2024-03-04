@@ -15,6 +15,8 @@
 
     Loss functions.
 """
+from typing import List
+
 import torch as th
 from torch import nn
 import torch.nn.functional as F
@@ -70,6 +72,28 @@ class ClassifyLossFunc(GSLayer):
         int : the number of output dimensions.
         """
         return None
+
+class Matryoshka_CE_Loss(GSLayer):
+	def __init__(self, relative_importance: List[float] = None, **kwargs):
+		super().__init__()
+		self.loss_fn = nn.CrossEntropyLoss(**kwargs)
+		# relative importance shape: [G]
+		self.relative_importance = relative_importance
+
+	def forward(self, logits, labels):
+		# output shape: [G granularities, N batch size, C number of classes]
+		# target shape: [N batch size]
+
+		# Calculate losses for each output and stack them. This is still O(N)
+		losses = th.stack([self.loss_fn(output_i, labels.long()) for output_i in logits])
+
+		# Set relative_importance to 1 if not specified
+		rel_importance = th.ones_like(losses) if self.relative_importance is None else th.tensor(self.relative_importance)
+
+		# Apply relative importance weights
+		weighted_losses = rel_importance * losses
+		return weighted_losses.sum()
+
 
 class RegressionLossFunc(GSLayer):
     """ Loss function for regression

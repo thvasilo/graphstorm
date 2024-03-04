@@ -755,6 +755,15 @@ class GSConfig:
         return None
 
     @property
+    def nesting(self):
+        """Whether to use Matryoshka nesting in GNN model.
+        """
+        # pylint: disable=no-member
+        if hasattr(self, "_nesting"):
+            return self._nesting
+        return False
+
+    @property
     def node_feat_name(self):
         """ User defined node feature name
 
@@ -2349,6 +2358,12 @@ def _add_gnn_args(parser):
     parser.add_argument(
             "--use-mini-batch-infer",
             help="Whether to use mini-batch or full graph inference during evalution",
+            type=lambda x: (str(x).lower() in ['true', '1']),
+            default=argparse.SUPPRESS
+    )
+    parser.add_argument(
+            "--use-nesting",
+            help="Whether to use Matryoshka nesting during training",
             type=lambda x: (str(x).lower() in ['true', '1']),
             default=argparse.SUPPRESS
     )

@@ -15,6 +15,8 @@
 
     Node prediction decoders.
 """
+import sys
+
 import torch as th
 from torch import nn
 
@@ -38,14 +40,24 @@ class EntityClassifier(GSLayer):
                  in_dim,
                  num_classes,
                  multilabel,
+                 use_nesting=False,
+                 nesting_list=None,
                  dropout=0):
-        super(EntityClassifier, self).__init__()
+        super().__init__()
         self._in_dim = in_dim
         self._num_classes = num_classes
         self._multilabel = multilabel
-        self.decoder = nn.Parameter(th.Tensor(in_dim, num_classes))
-        nn.init.xavier_uniform_(self.decoder,
-                                gain=nn.init.calculate_gain('relu'))
+        self._use_nesting = use_nesting
+        if use_nesting:
+            self.decoder = MRL_Linear_Layer(
+                nesting_list=nesting_list,
+                num_classes=num_classes,
+                efficient=True,
+            )
+        else:
+            self.decoder = nn.Parameter(th.Tensor(in_dim, num_classes))
+            nn.init.xavier_uniform_(self.decoder,
+                                    gain=nn.init.calculate_gain('relu'))
         # TODO(zhengda): The dropout is not used here.
         self.dropout = nn.Dropout(dropout)
 
@@ -61,7 +73,10 @@ class EntityClassifier(GSLayer):
         -------
         Tensor : the logits
         '''
-        return th.matmul(inputs, self.decoder)
+        if self._use_nesting:
+            return self.decoder(inputs)
+        else:
+            return th.matmul(inputs, self.decoder)
 
     def predict(self, inputs):
         """ Make prediction on input data.
@@ -75,7 +90,11 @@ class EntityClassifier(GSLayer):
         -------
         Tensor : maximum of the predicted results
         """
-        logits = th.matmul(inputs, self.decoder)
+        if self._use_nesting:
+            logits = self.decoder(inputs)
+            logits=th.stack(logits, dim=0)[-1, :, :]
+        else:
+            logits = th.matmul(inputs, self.decoder)
         return (th.sigmoid(logits) > .5).long() if self._multilabel else logits.argmax(dim=1)
 
     def predict_proba(self, inputs):
@@ -90,7 +109,11 @@ class EntityClassifier(GSLayer):
         -------
         Tensor : all normalized predicted results
         """
-        logits = th.matmul(inputs, self.decoder)
+        if self._use_nesting:
+            logits = self.decoder(inputs)
+            logits=th.stack(logits, dim=0)
+        else:
+            logits = th.matmul(inputs, self.decoder)
         return th.sigmoid(logits) if self._multilabel else th.softmax(logits, 1)
 
     @property
@@ -104,6 +127,53 @@ class EntityClassifier(GSLayer):
         """ The number of output dimensions.
         """
         return self._num_classes
+
+class MRL_Linear_Layer(GSLayer):
+    def __init__(
+            self,
+            nesting_list,
+            num_classes,
+            efficient=True,
+            **kwargs):
+        super().__init__()
+        self.nesting_list = nesting_list
+        self.efficient = efficient
+        if self.efficient:
+            setattr(self, f"nesting_classifier_{0}", nn.Linear(nesting_list[-1], num_classes, **kwargs))
+        else:
+            for i, num_feat in enumerate(self.nesting_list):
+                setattr(self, f"nesting_classifier_{i}", nn.Linear(num_feat, num_classes, **kwargs))
+
+    def reset_parameters(self):
+        if self.efficient:
+            self.nesting_classifier_0.reset_parameters()
+        else:
+            for i in range(len(self.nesting_list)):
+                getattr(self, f"nesting_classifier_{i}").reset_parameters()
+
+
+    def forward(self, x):
+        nesting_logits = ()
+        for i, num_feat in enumerate(self.nesting_list):
+            if self.efficient:
+                if self.nesting_classifier_0.bias is None:
+                    nesting_logits += (
+                        th.matmul(
+                            x[:, :num_feat],
+                            (self.nesting_classifier_0.weight[:, :num_feat]).t())
+                        )
+                else:
+                    nesting_logits += (
+                        th.matmul(
+                            x[:, :num_feat],
+                            (self.nesting_classifier_0.weight[:, :num_feat]).t()
+                        )
+                            + self.nesting_classifier_0.bias,
+                    )
+            else:
+                nesting_logits +=  (getattr(self, f"nesting_classifier_{i}")(x[:, :num_feat]),)
+
+        return nesting_logits
 
 class EntityRegression(GSLayer):
     ''' Regression on entity nodes

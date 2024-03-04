@@ -48,11 +48,12 @@ from .model.node_glem import GLEM
 from .model.edge_gnn import GSgnnEdgeModel
 from .model.lp_gnn import GSgnnLinkPredictionModel
 from .model.loss_func import (ClassifyLossFunc,
+                              Matryoshka_CE_Loss,
                               RegressionLossFunc,
                               LinkPredictBCELossFunc,
                               WeightedLinkPredictBCELossFunc,
                               LinkPredictContrastiveLossFunc)
-from .model.node_decoder import EntityClassifier, EntityRegression
+from .model.node_decoder import EntityClassifier, EntityRegression, MRL_Linear_Layer
 from .model.edge_decoder import (DenseBiDecoder,
                                  MLPEdgeDecoder,
                                  MLPEFeatEdgeDecoder)
@@ -210,14 +211,44 @@ def create_builtin_node_model(g, config, train_task):
 
     if config.task_type == BUILTIN_TASK_NODE_CLASSIFICATION:
         if not isinstance(config.num_classes, dict):
-            model.set_decoder(EntityClassifier(model.gnn_encoder.out_dims \
-                                                if model.gnn_encoder is not None \
-                                                else model.node_input_encoder.out_dims,
-                                               config.num_classes,
-                                               config.multilabel))
-            model.set_loss_func(ClassifyLossFunc(config.multilabel,
-                                             config.multilabel_weights,
-                                             config.imbalance_class_weights))
+            if config.nesting:
+                assert not config.multilabel, "Multilabel is not supported for nesting."
+                if model.gnn_encoder:
+                    max_dims = model.gnn_encoder.out_dims
+                else:
+                    max_dims = model.node_input_encoder.out_dims
+                num_resolutions = 3
+                nest_list = [max_dims//2**i for i in range(num_resolutions-1, -1, -1)]
+                print(f"Nested representations: {nest_list}")
+                in_dim = model.gnn_encoder.out_dims \
+                            if model.gnn_encoder is not None \
+                            else model.node_input_encoder.out_dims
+                model.set_decoder(EntityClassifier(
+                    in_dim=in_dim,
+                    num_classes=config.num_classes,
+                    multilabel=config.multilabel,
+                    use_nesting=True,
+                    nesting_list=nest_list,
+                    dropout=0,
+                    )
+                )
+
+                model.set_loss_func(
+                    Matryoshka_CE_Loss(
+                        relative_importance=None,
+                        weight=config.imbalance_class_weights,
+                    )
+                )
+            else:
+                model.set_decoder(EntityClassifier(
+                    model.gnn_encoder.out_dims \
+                            if model.gnn_encoder is not None \
+                            else model.node_input_encoder.out_dims,
+                        config.num_classes,
+                        config.multilabel))
+                model.set_loss_func(ClassifyLossFunc(config.multilabel,
+                                                config.multilabel_weights,
+                                                config.imbalance_class_weights))
         else:
             decoder = {}
             loss_func = {}
