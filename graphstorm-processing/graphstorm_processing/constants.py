@@ -55,3 +55,6 @@ DTYPE_MAP = {TYPE_FLOAT32: FloatType(), TYPE_FLOAT64: DoubleType()}
 HUGGINGFACE_TRANFORM = "huggingface"
 HUGGINGFACE_TOKENIZE = "tokenize_hf"
 HUGGINGFACE_EMB = "embedding_hf"
+
+########## Precomputed transformations ################
+TRANSFORMATIONS_FILENAME = "precomputed_transformations.json"

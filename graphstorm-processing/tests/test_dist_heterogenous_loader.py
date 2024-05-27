@@ -28,6 +28,7 @@ import pytest
 
 from graphstorm_processing.graph_loaders.dist_heterogeneous_loader import (
     DistHeterogeneousGraphLoader,
+    HeterogeneousLoaderConfig,
     NODE_MAPPING_INT,
     NODE_MAPPING_STR,
 )
@@ -99,16 +100,21 @@ def no_label_data_configs_fixture():
 def dghl_loader_fixture(spark, data_configs_with_label, tempdir) -> DistHeterogeneousGraphLoader:
     """Create a re-usable loader that includes labels"""
     input_path = os.path.join(_ROOT, "resources/small_heterogeneous_graph")
-    dhgl = DistHeterogeneousGraphLoader(
-        spark,
+    loader_config = HeterogeneousLoaderConfig(
+        add_reverse_edges=True,
+        data_configs=data_configs_with_label,
+        enable_assertions=True,
+        graph_name="small_heterogeneous_graph",
+        input_prefix=input_path,
         local_input_path=input_path,
         local_output_path=tempdir,
-        output_prefix=tempdir,
-        input_prefix=input_path,
-        data_configs=data_configs_with_label,
         num_output_files=1,
-        add_reverse_edges=True,
-        enable_assertions=True,
+        output_prefix=tempdir,
+        precomputed_transformations={},
+    )
+    dhgl = DistHeterogeneousGraphLoader(
+        spark,
+        loader_config=loader_config,
     )
     return dhgl
 
@@ -119,16 +125,21 @@ def dghl_loader_no_label_fixture(
 ) -> DistHeterogeneousGraphLoader:
     """Create a re-usable loader without labels"""
     input_path = os.path.join(_ROOT, "resources/small_heterogeneous_graph")
-    dhgl = DistHeterogeneousGraphLoader(
-        spark,
+    loader_config = HeterogeneousLoaderConfig(
+        add_reverse_edges=True,
+        data_configs=no_label_data_configs,
+        enable_assertions=True,
+        graph_name="small_heterogeneous_graph",
+        input_prefix=input_path,
         local_input_path=input_path,
         local_output_path=tempdir,
-        output_prefix=tempdir,
-        input_prefix=input_path,
-        data_configs=no_label_data_configs,
         num_output_files=1,
-        add_reverse_edges=True,
-        enable_assertions=True,
+        output_prefix=tempdir,
+        precomputed_transformations={},
+    )
+    dhgl = DistHeterogeneousGraphLoader(
+        spark,
+        loader_config,
     )
     return dhgl
 
@@ -139,16 +150,21 @@ def dghl_loader_no_reverse_edges_fixture(
 ) -> DistHeterogeneousGraphLoader:
     """Create a re-usable loader that doesn't produce reverse edegs"""
     input_path = os.path.join(_ROOT, "resources/small_heterogeneous_graph")
-    dhgl = DistHeterogeneousGraphLoader(
-        spark,
+    loader_config = HeterogeneousLoaderConfig(
+        add_reverse_edges=False,
+        data_configs=data_configs_with_label,
+        enable_assertions=True,
+        graph_name="small_heterogeneous_graph",
+        input_prefix=input_path,
         local_input_path=input_path,
         local_output_path=tempdir,
-        output_prefix=tempdir,
-        input_prefix=input_path,
-        data_configs=data_configs_with_label,
         num_output_files=1,
-        add_reverse_edges=False,
-        enable_assertions=True,
+        output_prefix=tempdir,
+        precomputed_transformations={},
+    )
+    dhgl = DistHeterogeneousGraphLoader(
+        spark,
+        loader_config,
     )
     return dhgl
 
