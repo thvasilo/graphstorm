@@ -111,7 +111,7 @@ def test_category_transformation_with_null_values(spark: SparkSession):
 
 
 def test_multiple_categories_transformation(user_df, spark):
-    """Test transforming multiple cat columns"""
+    """Test transforming multiple single-cat columns"""
     dist_category_transformation = DistCategoryTransformation(["occupation", "gender"], spark)
 
     transformed_df = dist_category_transformation.apply(user_df)
@@ -123,8 +123,26 @@ def test_multiple_categories_transformation(user_df, spark):
     assert gender_distinct_values == 3
 
 
+def test_multiple_single_cat_cols_json(user_df, spark):
+    """Test JSON representation when transforming multiple single-cat columns"""
+    dist_category_transformation = DistCategoryTransformation(["occupation", "gender"], spark)
+
+    _ = dist_category_transformation.apply(user_df)
+
+    multi_cols_rep = dist_category_transformation.get_json_representation()
+
+    labels_array = multi_cols_rep["string_indexer_labels_array"]
+    one_hot_index_for_string = multi_cols_rep["per_col_label_to_one_hot_idx"]
+    cols = multi_cols_rep["cols"]
+
+    # The Spark-generated and our own one-hot-index mappings should match
+    for col_labels, col in zip(labels_array, cols):
+        for idx, label in enumerate(col_labels):
+            assert idx == one_hot_index_for_string[col][label]
+
+
 def test_multi_category_transformation(multi_cat_df_and_separator, check_df_schema):
-    """Test transforming multi-category column"""
+    """Test transforming single multi-category column"""
     df, separator = multi_cat_df_and_separator
     col_name = df.columns[0]
 

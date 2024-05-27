@@ -47,6 +47,7 @@ from graphstorm_processing.constants import (
     MIN_VALUE,
     MAX_VALUE,
     VALUE_COUNTS,
+    TRANSFORMATIONS_FILENAME,
 )
 
 pytestmark = pytest.mark.usefixtures("spark")
@@ -262,6 +263,7 @@ def test_load_dist_heterogen_node_class(dghl_loader: DistHeterogeneousGraphLoade
                 "input_ids": 16,
                 "token_type_ids": 16,
                 "multi": 2,
+                "state": 3,
             }
         },
         "efeat_size": {},
@@ -289,6 +291,7 @@ def test_load_dist_heterogen_node_class(dghl_loader: DistHeterogeneousGraphLoade
             "test_mask",
             "age",
             "multi",
+            "state",
             "input_ids",
             "attention_mask",
             "token_type_ids",
@@ -297,6 +300,13 @@ def test_load_dist_heterogen_node_class(dghl_loader: DistHeterogeneousGraphLoade
 
     for node_type in metadata["node_data"]:
         assert metadata["node_data"][node_type].keys() == expected_node_data[node_type]
+
+    with open(
+        os.path.join(dghl_loader.output_path, TRANSFORMATIONS_FILENAME), "r", encoding="utf-8"
+    ) as transformation_file:
+        transformations_dict = json.load(transformation_file)
+
+        assert "state" in transformations_dict["node_features"]
 
 
 def test_load_dist_hgl_without_labels(

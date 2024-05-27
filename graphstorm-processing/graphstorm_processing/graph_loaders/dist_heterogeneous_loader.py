@@ -278,6 +278,8 @@ class DistHeterogeneousGraphLoader(HeterogeneousGraphLoader):
         ) as f:
             json.dump(self.transformation_representations, f, indent=4)
 
+        # Column substitutions contain any col names we needed to change because their original
+        # name did not fit Parquet requirements
         if len(self.column_substitutions) > 0:
             with open(
                 os.path.join(self.output_path, "column_substitutions.json"), "w", encoding="utf-8"

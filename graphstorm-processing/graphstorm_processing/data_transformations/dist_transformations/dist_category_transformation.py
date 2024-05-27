@@ -50,7 +50,7 @@ class DistCategoryTransformation(DistributedTransformation):
 
     def apply(self, input_df: DataFrame) -> DataFrame:
         processed_col_names = []
-        top_categories_per_col = {}
+        top_categories_per_col: dict[str, list] = {}
         for current_col in self.cols:
             processed_col_names.append(current_col + "_processed")
             distinct_category_counts = input_df.groupBy(current_col).count()  # type: DataFrame
@@ -114,45 +114,72 @@ class DistCategoryTransformation(DistributedTransformation):
         )
 
         # Structure: {column_name: {category_string: index_value, ...}. ...}
-        index_values_per_col_string: dict[str, dict[str, float]] = {}
+        per_col_label_to_one_hot_idx: dict[str, dict[str, int]] = {}
 
-        # To get the transformed values for each value for each col
+        # To get the transformed values for each value in each col
         # we need to create a DataFrame with the top categories for the current
-        # category, then fill in the rest of the values with placeholders
+        # col, then fill in the rest of the values with placeholders
         # and pass the generated DF through the one-hot encoder
         for current_col, processed_col in zip(self.cols, processed_col_names):
             other_cols = [x for x in self.cols if x != current_col]
-            top_str_categories_set = top_categories_per_col[current_col]
-            # Each col might have different number of top categories
-            num_current_col_cats = len(top_str_categories_set)
+            top_str_categories_list = top_categories_per_col[current_col]
+            # Spark doesn't model missing values, the all-zeroes vector is used
+            top_str_categories_list.remove(None)
+            print(top_str_categories_list)
+            # Each col might have different number of top categories, we need one DF per col
+            num_current_col_cats = len(top_str_categories_list)
+            # We don't care about values for the other cols in this iteration,
+            # just fill with empty string
             placeholder_vals = [""] * num_current_col_cats
             placeholder_cols = [placeholder_vals for _ in range(len(self.cols) - 1)]
-            current_col_unique_vals = [list(top_str_categories_set)]
+            current_col_unique_vals = [list(top_str_categories_list)]
             # We need to create a DF where all cols have num_rows == num_current_col_cats
+            # and the current col needs to be the first col in the DF.
             vals_dict = dict(
                 zip([current_col] + other_cols, current_col_unique_vals + placeholder_cols)
             )
-            print(pd.DataFrame(vals_dict))
+
             # One hot encoder expects a DF with all cols that were used to train it
+            # so we use the top-MAX_CATEGORIES_PER_FEATURE values for the current col,
+            # and the placeholders for the rest
             top_str_categories_df = self.spark.createDataFrame(pd.DataFrame(vals_dict))
             top_indexed_categories_df = str_indexer_model.transform(top_str_categories_df)
-            print("top indexed categories df", current_col)
-            top_indexed_categories_df.show()
 
-            index_values_per_col_string[current_col] = {
+            # For the current col, get the one-hot index for each of its category strings
+            # by passing the top-k values DF through the one-hot encoder model
+            per_col_label_to_one_hot_idx[current_col] = {
                 x[current_col]: int(x[processed_col])
                 for x in one_hot_encoder_model.transform(top_indexed_categories_df).collect()
             }
 
+        # see get_json_representation() docstring for structure
         self.json_representation = {
             "string_indexer_labels_array": str_indexer_model.labelsArray,
             "cols": self.cols,
-            "one_hot_index_for_string": index_values_per_col_string,
+            "per_col_label_to_one_hot_idx": per_col_label_to_one_hot_idx,
         }
 
-        print(self.json_representation)
-
         return dense_vector_features
+
+    def get_json_representation(self) -> dict:
+        """Representation of the single-category transformation for one or more columns.
+
+        Returns
+        -------
+        dict
+            Structure:
+            string_indexer_labels_array:
+                tuple[tuple[str]], outer tuple has num_cols elements,
+                each inner tuple has num_cats elements, each str is a category string.
+                Spark uses this to represent the one-hot index for each category, its
+                position in the inner tuple is the one-hot-index position for the string.
+                Categories are sorted by their frequency in the data.
+            cols:
+                list[str], with num_cols elements
+            per_col_label_to_one_hot_idx:
+                dict[str, dict[str, int]], with num_cols elements, each with num_categories elements
+        """
+        return self.json_representation
 
 
 class DistMultiCategoryTransformation(DistributedTransformation):

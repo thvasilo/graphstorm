@@ -46,6 +46,7 @@ class DistributedTransformation(ABC):
 
     def get_json_representation(self) -> dict:
         """Get a JSON representation of the transformation."""
+        # TODO: Should we try to guarantee apply() has ran before this?
         if self.json_representation:
             return self.json_representation
         else:
