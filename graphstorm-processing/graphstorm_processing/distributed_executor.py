@@ -196,6 +196,8 @@ class DistributedExecutor:
         else:
             self.precomputed_transformations = {}
 
+        print("precomp_transformations:", self.precomputed_transformations)
+
         if "version" in dataset_config_dict:
             config_version = dataset_config_dict["version"]
             if config_version == "gsprocessing-v1.0":
@@ -230,6 +232,26 @@ class DistributedExecutor:
         # Create the Spark session for execution
         self.spark = spark_utils.create_spark_session(self.sm_execution, self.filesystem_type)
 
+        data_configs = create_config_objects(self.graph_config_dict)
+
+        # Prefer explicit arguments for clarity
+        loader_config = HeterogeneousLoaderConfig(
+            add_reverse_edges=self.add_reverse_edges,
+            data_configs=data_configs,
+            enable_assertions=False,
+            graph_name=self.graph_name,
+            input_prefix=self.input_prefix,
+            local_input_path=self.local_config_path,
+            local_output_path=self.local_output_path,
+            num_output_files=self.num_output_files,
+            output_prefix=self.output_prefix,
+            precomputed_transformations=self.precomputed_transformations,
+        )
+        self.loader = DistHeterogeneousGraphLoader(
+            self.spark,
+            loader_config,
+        )
+
     def _upload_output_files(self, loader: DistHeterogeneousGraphLoader, force=False):
         """Upload output files to S3
 
@@ -257,27 +279,9 @@ class DistributedExecutor:
         Executes the Spark processing job.
         """
         logging.info("Performing data processing with PySpark...")
-        data_configs = create_config_objects(self.graph_config_dict)
-
         t0 = time.time()
-        loader_config = HeterogeneousLoaderConfig(
-            add_reverse_edges=self.add_reverse_edges,
-            data_configs=data_configs,
-            enable_assertions=False,
-            graph_name=self.graph_name,
-            input_prefix=self.input_prefix,
-            local_input_path=self.local_config_path,
-            local_output_path=self.local_output_path,
-            num_output_files=self.num_output_files,
-            output_prefix=self.output_prefix,
-            precomputed_transformations=self.precomputed_transformations,
-        )
-        # Prefer explicit arguments for clarity
-        loader = DistHeterogeneousGraphLoader(
-            self.spark,
-            loader_config,
-        )
-        graph_meta_dict = loader.load()
+
+        graph_meta_dict = self.loader.load()
 
         t1 = time.time()
         logging.info("Time to transform data for distributed partitioning: %s sec", t1 - t0)
@@ -304,10 +308,10 @@ class DistributedExecutor:
                 logging.info("Attempting to repartition graph data on Spark leader...")
                 try:
                     # Upload existing output files before trying to re-partition
-                    self._upload_output_files(loader, force=True)
+                    self._upload_output_files(self.loader, force=True)
                     updated_metadata = repartition_files(graph_meta_dict, repartitioner)
                     with open(
-                        os.path.join(loader.output_path, "updated_row_counts_metadata.json"),
+                        os.path.join(self.loader.output_path, "updated_row_counts_metadata.json"),
                         "w",
                         encoding="utf-8",
                     ) as f:
@@ -330,7 +334,7 @@ class DistributedExecutor:
 
         # This is used to upload the output JSON files to S3 on non-SageMaker runs,
         # since we can't rely on SageMaker to do it
-        self._upload_output_files(loader, force=False)
+        self._upload_output_files(self.loader, force=False)
 
 
 def parse_args() -> argparse.Namespace:
