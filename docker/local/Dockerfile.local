@@ -78,7 +78,10 @@ FROM base-${DEVICE} as runtime
 ENV PYTHONPATH="/root/dgl/tools/:${PYTHONPATH}"
 
 # Download DGL source code
-RUN cd /root; git clone --single-branch https://github.com/dmlc/dgl.git
+# RUN cd /root; git clone --branch v${DGL_VERSION} https://github.com/dmlc/dgl.git
+# Uncomment if we prefer a local DGL distribution
+COPY code/dgl /root/dgl
+ENV PYTHONPATH="/root/dgl/python/:${PYTHONPATH}"
 
 # Copy GraphStorm source and add to PYTHONPATH
 RUN mkdir -p /graphstorm

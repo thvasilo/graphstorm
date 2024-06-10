@@ -9,7 +9,7 @@ authors = [
 ]
 
 [tool.poetry.dependencies]
-python = "~3.9.12"
+python = "^3.9"
 pyspark = ">=3.3.0, < 3.6.0"
 pyarrow = "~14.0.1"
 boto3 = "~1.28.1"
