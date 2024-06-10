@@ -321,6 +321,8 @@ def run_partition(job_config: PartitionJobConfig):
 
     if job_config.partition_algorithm == 'random':
         sm_partitioner = SageMakerRandomPartitioner(partition_config)
+    elif job_config.partition_algorithm == 'range':
+        sm_partitioner = SageMakerRangePartitioner(partition_config)
     else:
         raise RuntimeError(f"Unknown partition algorithm: '{job_config.partition_algorithm}'", )
 

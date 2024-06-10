@@ -2744,6 +2744,12 @@ def _add_initialization_args(parser):
         help="Whether to use WholeGraph to store intermediate embeddings/tensors generated \
             during training or inference, e.g., cache_lm_emb, sparse_emb, etc."
     )
+    group.add_argument(
+        "--use-graphbolt",
+        type=lambda x: (str(x).lower() in ['true', '1']),
+        default=argparse.SUPPRESS,
+        help="Whether to use GraphBolt for DistDGL."
+    )
     return parser
 
 def _add_gsgnn_basic_args(parser):

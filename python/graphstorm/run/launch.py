@@ -480,7 +480,7 @@ def construct_torch_dist_launcher_cmd(
             cmd_str.
     """
     torch_cmd_template = (
-        "-m torch.distributed.launch "
+        "-m torch.distributed.run "
         "--nproc_per_node={nproc_per_node} "
         "--nnodes={nnodes} "
         "--node_rank={node_rank} "

@@ -126,6 +126,8 @@ def main():
         partition_config = ParMETISConfig(args.ip_config, args.input_path,
                                           args.dgl_tool_path, args.metadata_filename)
         partitioner = ParMetisPartitionAlgorithm(metadata_dict, partition_config)
+    elif args.partition_algorithm == "range":
+        partitioner = RangePartitionAlgorithm(metadata_dict)
     else:
         raise RuntimeError(f"Unknown partition algorithm {args.part_algorithm}")
 

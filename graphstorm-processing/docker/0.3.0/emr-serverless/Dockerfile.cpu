@@ -49,7 +49,8 @@ RUN python -m pip install --no-deps /usr/lib/spark/code/graphstorm_processing-*.
     rm /usr/lib/spark/code/graphstorm_processing-*.whl && rm -rf /root/.cache
 
 FROM runtime AS test
-RUN python -m pip install --no-deps /usr/lib/spark/code/graphstorm-processing/ && rm -rf /root/.cache
+RUN python -m pip install --no-deps /usr/lib/spark/code/graphstorm-processing/ pytest mock && rm -rf /root/.cache
+ENV PATH=$PATH:/home/hadoop/.local/bin
 
 USER hadoop:hadoop
 WORKDIR /home/hadoop

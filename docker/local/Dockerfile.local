@@ -40,7 +40,7 @@ RUN pip install \
     scipy==1.13.0 \
     && rm -rf /root/.cache
 
-ARG DGL_VERSION=2.2.1
+ARG DGL_VERSION=2.3a240609
 ARG DGL_CUDA_VERSION=121
 ARG OGB_VERSION=1.3.6
 ARG TORCH_VERSION=2.1.2
@@ -56,7 +56,7 @@ RUN pip install \
 
 RUN TORCH_MAJOR_MINOR=$(echo $TORCH_VERSION | cut -c1-3) && \
     pip install \
-    dgl==${DGL_VERSION} -f https://data.dgl.ai/wheels/torch-${TORCH_MAJOR_MINOR}/repo.html \
+    dgl==${DGL_VERSION} -f https://data.dgl.ai/wheels-test/torch-${TORCH_MAJOR_MINOR}/repo.html \
     ogb==${OGB_VERSION} \
     transformers==${TRANSFORMERS_VERSION} \
     && rm -rf /root/.cache
@@ -67,7 +67,7 @@ FROM base as base-gpu
 RUN TORCH_MAJOR_MINOR=$(echo $TORCH_VERSION | cut -c1-3) && \
     pip install \
     dgl==${DGL_VERSION}+cu${DGL_CUDA_VERSION} \
-    -f https://data.dgl.ai/wheels/torch-${TORCH_MAJOR_MINOR}/cu${DGL_CUDA_VERSION}/repo.html \
+    -f https://data.dgl.ai/wheels-test/torch-${TORCH_MAJOR_MINOR}/cu${DGL_CUDA_VERSION}/repo.html \
     ogb==${OGB_VERSION} \
     torch==${TORCH_VERSION} \
     transformers==${TRANSFORMERS_VERSION} \
@@ -78,7 +78,7 @@ FROM base-${DEVICE} as runtime
 ENV PYTHONPATH="/root/dgl/tools/:${PYTHONPATH}"
 
 # Download DGL source code
-RUN cd /root; git clone --branch v${DGL_VERSION} https://github.com/dmlc/dgl.git
+RUN cd /root; git clone --single-branch https://github.com/dmlc/dgl.git
 
 # Copy GraphStorm source and add to PYTHONPATH
 RUN mkdir -p /graphstorm

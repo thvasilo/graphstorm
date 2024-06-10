@@ -321,7 +321,7 @@ def dist_inference_one_layer(layer_id, g, dataloader, target_ntypes, layer, get_
             # computations in every iteration.
             input_nodes = {ntype: th.empty((0,), dtype=g.idtype) for ntype in g.ntypes}
             blocks = None
-        if iter_l % 100000 == 0 and get_rank() == 0:
+        if iter_l % 100000 == 0 and get_rank() == 0 and iter_l > 0:
             logging.info("[Rank 0] dist_inference: finishes %d iterations.", iter_l)
 
         if task_tracker is not None:

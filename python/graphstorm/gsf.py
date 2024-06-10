@@ -107,7 +107,7 @@ from .inference import (GSgnnLinkPredictionInferrer,
 
 from .tracker import get_task_tracker_class
 
-def initialize(ip_config=None, backend='gloo', local_rank=0, use_wholegraph=False):
+def initialize(ip_config=None, backend='gloo', local_rank=0, use_wholegraph=False, use_graphbolt=False):
     """ Initialize distributed training and inference context.
 
     .. code::
@@ -139,7 +139,9 @@ def initialize(ip_config=None, backend='gloo', local_rank=0, use_wholegraph=Fals
     """
     # We need to use socket for communication in DGL 0.8. The tensorpipe backend has a bug.
     # This problem will be fixed in the future.
-    dgl.distributed.initialize(ip_config, net_type='socket')
+    if use_graphbolt:
+        logging.info("Using GraphBolt representation for DistDGL.")
+    dgl.distributed.initialize(ip_config, net_type='socket', use_graphbolt=use_graphbolt)
     assert th.cuda.is_available() or backend == "gloo", "Gloo backend required for a CPU setting."
     if ip_config is not None:
         th.distributed.init_process_group(backend=backend)
