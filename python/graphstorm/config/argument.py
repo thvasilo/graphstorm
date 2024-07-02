@@ -663,6 +663,7 @@ class GSConfig:
         _ = self.edge_id_mapping_file
         _ = self.verbose
         _ = self.use_wholegraph_embed
+        _ = self.use_graphbolt
 
         # Data
         _ = self.node_feat_name
@@ -948,6 +949,19 @@ class GSConfig:
             assert self._use_wholegraph_embed in [True, False], \
                 "Invalid value for _use_wholegraph_embed. Must be either True or False."
             return self._use_wholegraph_embed
+        else:
+            return None
+
+    @property
+    def use_graphbolt(self):
+        """ Whether to use GraphBolt in-memory graph representation.
+            See https://docs.dgl.ai/en/2.0.x/stochastic_training/index.html
+            for details.
+        """
+        if hasattr(self, "_use_graphbolt"):
+            assert self._use_graphbolt in [True, False], \
+                "Invalid value for _use_graphbolt. Must be either True or False."
+            return self._use_graphbolt
         else:
             return None
 

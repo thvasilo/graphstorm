@@ -43,7 +43,7 @@ cp -r $GSF_HOME"/tools" $GSF_HOME"/docker/code/tools"
 cp -r $GSF_HOME"/training_scripts" $GSF_HOME"/docker/code/training_scripts"
 # If using a local DGL installation we expect it to be one level above GSF
 mkdir -p code/dgl
-rsync -qr "${GSF_HOME}/../dgl/" code/dgl/ --exclude .venv --exclude dist --exclude .git \
+rsync -qr "${GSF_HOME}/../dgl/python" code/dgl/ --exclude .venv --exclude dist --exclude .git \
         --exclude "*__pycache__" --exclude "*.pytest_cache" --exclude "*.mypy_cache"
 
 
