@@ -15,7 +15,7 @@
 
     Modules for local graph partitioning.
 """
-from .random_partition import (RandomPartitionAlgorithm)
-from .metis_partition import (ParMetisPartitionAlgorithm)
-from .partition_config import (ParMETISConfig)
 from .partition_algo_base import LocalPartitionAlgorithm
+from .partition_config import ParMETISConfig
+from .metis_partition import ParMetisPartitionAlgorithm
+from .random_partition import RandomPartitionAlgorithm

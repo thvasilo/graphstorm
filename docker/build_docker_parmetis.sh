@@ -1,6 +1,8 @@
 #!/bin/bash
 set -eox pipefail
 
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" &>/dev/null && pwd -P)
+
 # process argument 1: graphstorm home folder
 if [ -z "$1" ]; then
     echo "Please provide a path to the root directory of the GraphStorm repository."
@@ -26,6 +28,7 @@ fi
 
 # Copy scripts and tools codes to the docker folder
 mkdir -p $GSF_HOME"/docker/code"
+cp $SCRIPT_DIR"/local/fetch_and_run.sh" $GSF_HOME"/docker/code/"
 cp -r $GSF_HOME"/python" $GSF_HOME"/docker/code/python"
 cp -r $GSF_HOME"/examples" $GSF_HOME"/docker/code/examples"
 cp -r $GSF_HOME"/inference_scripts" $GSF_HOME"/docker/code/inference_scripts"
