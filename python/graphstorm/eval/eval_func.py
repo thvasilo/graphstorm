@@ -659,5 +659,8 @@ def compute_mrr(ranking):
         link prediction mrr metrics: tensor
     """
     logs = th.div(1.0, ranking)
-    metrics = th.tensor(th.div(th.sum(logs),len(logs)))
+    metrics = th.div(
+        th.sum(logs),
+        len(logs)
+    ).clone().detach()
     return metrics

@@ -138,7 +138,6 @@ class GLEMNodePredictionTrainer(GSgnnNodePredictionTrainer):
         on_cpu = self.device == th.device('cpu')
         model = DistributedDataParallel(self._model, device_ids=None if on_cpu else [self.device],
                                         output_device=None if on_cpu else self.device,
-                                        find_unused_parameters=True,
                                         static_graph=False)
         device = model.device
         data = train_loader.data
