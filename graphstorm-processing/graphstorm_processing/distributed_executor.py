@@ -281,6 +281,7 @@ class DistributedExecutor:
 
             output_files = os.listdir(loader.output_path)
             for output_file in output_files:
+                logging.info("Uploading output file %s to %s", output_file, self.output_prefix)
                 s3.meta.client.upload_file(
                     f"{os.path.join(loader.output_path, output_file)}",
                     bucket,

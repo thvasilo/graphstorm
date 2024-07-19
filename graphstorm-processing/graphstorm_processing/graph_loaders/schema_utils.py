@@ -18,13 +18,14 @@ the type of the columns from the type mentioned in the configuration.
 """
 
 import logging
-from typing import Sequence, List, Type
+from typing import Sequence, List, Union, Type
+from itertools import chain
 
 from pyspark.sql.types import StructType, StructField, StringType, DataType, DoubleType
 
-from ..config.config_parser import EdgeConfig, NodeConfig
-from ..config.label_config_base import LabelConfig
-from ..config.feature_config_base import FeatureConfig
+from graphstorm_processing.config.config_parser import EdgeConfig, NodeConfig
+from graphstorm_processing.config.label_config_base import LabelConfig
+from graphstorm_processing.config.feature_config_base import FeatureConfig
 
 
 def parse_edge_file_schema(edge_config: EdgeConfig) -> StructType:
@@ -56,7 +57,9 @@ def parse_edge_file_schema(edge_config: EdgeConfig) -> StructType:
     return StructType(edge_fields_list)
 
 
-def _parse_features_schema(features_objects: Sequence[FeatureConfig]) -> Sequence[StructField]:
+def _parse_features_schema(
+    features_objects: Sequence[FeatureConfig],
+) -> Sequence[StructField]:
     field_list = []
     for feature_config in features_objects:
         feature_type = feature_config.feat_type
@@ -102,7 +105,9 @@ def determine_spark_feature_type(feature_type: str) -> Type[DataType]:
         raise NotImplementedError(f"Unknown feature type: {feature_type}")
 
 
-def _parse_edge_labels_schema(edge_labels_objects: Sequence[LabelConfig]) -> Sequence[StructField]:
+def _parse_edge_labels_schema(
+    edge_labels_objects: Sequence[LabelConfig],
+) -> Sequence[StructField]:
     field_list = []
 
     for label_config in edge_labels_objects:
@@ -115,10 +120,46 @@ def _parse_edge_labels_schema(edge_labels_objects: Sequence[LabelConfig]) -> Seq
             field_list.append(StructField(label_col, DoubleType(), True))
         elif target_task_type == "link_prediction" and label_col:
             logging.info(
-                "Bypassing edge label %s, as it is only used for link prediction", label_col
+                "Bypassing edge label %s, as it is only used for link prediction",
+                label_col,
             )
 
     return field_list
+
+
+def select_relevant_columns(
+    structure_config: Union[NodeConfig, EdgeConfig],
+) -> list[str]:
+    """Given a structure config returns a list of columns to include in the input DF.
+
+    Parameters
+    ----------
+    structure_config : Union[NodeConfig, EdgeConfig]
+        A configuration object describing an edge or node type.
+
+    Returns
+    -------
+    list[str]
+        The list of columns that we will need to process the data.
+    """
+    relevant_cols = []
+
+    if isinstance(structure_config, EdgeConfig):
+        relevant_cols.extend([structure_config.src_col, structure_config.dst_col])
+    else:
+        relevant_cols.append(structure_config.node_col)
+
+    if structure_config.feature_configs:
+        col_lists = [fc.cols for fc in structure_config.feature_configs]
+        relevant_cols.extend(list(chain(*col_lists)))
+
+    if structure_config.label_configs:
+        # Add label columns only if non-empty, which is the case for link prediction
+        relevant_cols.extend(
+            [lc.label_column for lc in structure_config.label_configs if lc.label_column]
+        )
+
+    return list(set(relevant_cols))
 
 
 def parse_node_file_schema(node_config: NodeConfig) -> StructType:
@@ -148,7 +189,9 @@ def parse_node_file_schema(node_config: NodeConfig) -> StructType:
     return StructType(node_field_list)
 
 
-def _parse_node_labels_schema(node_labels_objects: List[LabelConfig]) -> Sequence[StructField]:
+def _parse_node_labels_schema(
+    node_labels_objects: List[LabelConfig],
+) -> Sequence[StructField]:
     field_list = []
 
     for label_config in node_labels_objects:

@@ -52,6 +52,7 @@ class DistFeatureTransformer(object):
         }
         logging.info("Feature name: %s", feat_name)
         logging.info("Transformation type: %s", feat_type)
+        logging.info("Transformation kwargs: %s", args_dict)
 
         if feat_type == "no-op":
             self.transformation = NoopTransformation(**default_kwargs, **args_dict)

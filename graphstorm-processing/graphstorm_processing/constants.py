@@ -54,7 +54,7 @@ VALID_OUTDTYPE = [TYPE_FLOAT32, TYPE_FLOAT64]
 DTYPE_MAP = {TYPE_FLOAT32: FloatType(), TYPE_FLOAT64: DoubleType()}
 
 ################# Bert transformations  ################
-HUGGINGFACE_TRANFORM = "huggingface"
+HUGGINGFACE_TRANSFORM = "huggingface"
 HUGGINGFACE_TOKENIZE = "tokenize_hf"
 HUGGINGFACE_EMB = "embedding_hf"
 

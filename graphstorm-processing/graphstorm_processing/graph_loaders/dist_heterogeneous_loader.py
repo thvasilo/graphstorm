@@ -14,17 +14,22 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
+import concurrent
+import concurrent.futures
+import copy
 import json
 import logging
 import math
 import numbers
 import os
+import threading
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from time import perf_counter
 from typing import Any, Dict, Optional, Set, Tuple
 
+# import pyspark
 from pyspark import RDD
 from pyspark.sql import Row, SparkSession, DataFrame, functions as F
 from pyspark.sql.types import (
@@ -37,6 +42,8 @@ from pyspark.sql.types import (
     ByteType,
 )
 from pyspark.sql.functions import col, when
+
+# from pyspark.util import VersionUtils
 from numpy.random import default_rng
 
 from graphstorm_processing.constants import (
@@ -45,11 +52,11 @@ from graphstorm_processing.constants import (
     VALUE_COUNTS,
     COLUMN_NAME,
     SPECIAL_CHARACTERS,
-    HUGGINGFACE_TRANFORM,
+    HUGGINGFACE_TRANSFORM,
     HUGGINGFACE_TOKENIZE,
     TRANSFORMATIONS_FILENAME,
 )
-from graphstorm_processing.config.config_parser import EdgeConfig, NodeConfig, StructureConfig
+from graphstorm_processing.config.config_parser import DataConfigsSequence, EdgeConfig, NodeConfig
 from graphstorm_processing.config.label_config_base import LabelConfig
 from graphstorm_processing.config.feature_config_base import FeatureConfig
 from graphstorm_processing.data_transformations.dist_feature_transformer import (
@@ -78,8 +85,9 @@ class HeterogeneousLoaderConfig:
 
     add_reverse_edges : bool
         Whether to add reverse edges to the graph.
-    data_configs : Dict[str, Sequence[StructureConfig]]
-        Dictionary of node and edge configurations objects.
+    data_configs : Dict[str, DataConfigsSequence]
+        Dictionary of configurations for nodes and edges. Maps the keys "edges" and "nodes"
+        to a sequence of configuration objects, one for each node/edge type in the graph.
     enable_assertions : bool, optional
         When true enables sanity checks for the output created.
         However these are costly to compute, so we disable them by default.
@@ -103,7 +111,7 @@ class HeterogeneousLoaderConfig:
     """
 
     add_reverse_edges: bool
-    data_configs: Mapping[str, Sequence[StructureConfig]]
+    data_configs: Mapping[str, DataConfigsSequence]
     enable_assertions: bool
     graph_name: str
     input_prefix: str
@@ -182,12 +190,12 @@ class DistHeterogeneousGraphLoader(object):
             # TODO: Any checks for local paths?
             self.input_prefix = loader_config.input_prefix
             self.output_prefix = loader_config.output_prefix
-        self.num_output_files = (
+        self.num_output_files: Optional[int] = (
             loader_config.num_output_files
             if loader_config.num_output_files and loader_config.num_output_files > 0
-            else int(spark.sparkContext.defaultParallelism)
+            else None
         )
-        assert self.num_output_files > 0
+
         # Mapping from node type to filepath, each file is a node-str to node-int-id mapping
         self.node_mapping_paths: dict[str, Sequence[str]] = {}
         # Mapping from label name to value counts
@@ -219,9 +227,14 @@ class DistHeterogeneousGraphLoader(object):
         self.graph_name = loader_config.graph_name
         self.skip_train_masks = False
         self.pre_computed_transformations = loader_config.precomputed_transformations
+        # Event that we use to indicate to the edge processing thread that a new node mapping
+        # is available, potentially allowing us to schedule processing for a new edge type
+        self.new_mapping_event = threading.Event()
+        # Event that we use to indicate that all edges have been processed and we can proceed
+        self.edge_processing_done = threading.Event()
 
     def process_and_write_graph_data(
-        self, data_configs: Mapping[str, Sequence[StructureConfig]]
+        self, data_configs: Mapping[str, DataConfigsSequence]
     ) -> ProcessedGraphRepresentation:
         """Process and encode all graph data.
 
@@ -234,8 +247,9 @@ class DistHeterogeneousGraphLoader(object):
 
         Parameters
         ----------
-        data_configs : Mapping[str, Sequence[StructureConfig]]
-            Dictionary of configuration for nodes and edges
+        data_configs : Mapping[str, DataConfigsSequence]
+            Dictionary of configurations for nodes and edges. Maps the keys "edges" and "nodes"
+            to a sequence of configuration objects, one for each node/edge type in the graph.
 
         Returns
         -------
@@ -262,6 +276,15 @@ class DistHeterogeneousGraphLoader(object):
 
         edge_configs = data_configs["edges"]  # type: Sequence[EdgeConfig]
 
+        # This thread runs in the background and launches edge processing jobs
+        # as the node mappings become available
+        edge_data_dict = {}
+        edges_dict = {}
+        edge_processing_thread = threading.Thread(
+            target=self.process_edge_data_async, args=(edge_configs, edge_data_dict, edges_dict)
+        )
+        edge_processing_thread.start()
+
         if "nodes" in data_configs:
             node_configs = data_configs["nodes"]  # type: Sequence[NodeConfig]
             missing_node_types = self._get_missing_node_types(edge_configs, node_configs)
@@ -287,7 +310,11 @@ class DistHeterogeneousGraphLoader(object):
             metadata_dict["node_data"] = {}
 
         edges_start_time = perf_counter()
-        edge_data_dict, edges_dict = self.process_edge_data(edge_configs)
+        # At this point all node mappings should be available so we can
+        # wait for edge processing to finish
+        edge_processing_thread.join()
+        logging.info("Node and edge processing done, writing output metadata files")
+        # edge_data_dict, edges_dict = self.process_edge_data(edge_configs)
         self.timers["process_edge_data"] = perf_counter() - edges_start_time
         metadata_dict["edge_data"] = edge_data_dict
         metadata_dict["edges"] = edges_dict
@@ -344,7 +371,7 @@ class DistHeterogeneousGraphLoader(object):
         return processed_representations
 
     @staticmethod
-    def _at_least_one_label_exists(data_configs: Mapping[str, Sequence[StructureConfig]]) -> bool:
+    def _at_least_one_label_exists(data_configs: Mapping[str, DataConfigsSequence]) -> bool:
         """
         Checks if at least one of the entries in the edges/nodes contains a label.
 
@@ -353,13 +380,13 @@ class DistHeterogeneousGraphLoader(object):
         True if at least one entry in the `edges` or `nodes` top-level keys contains
         a label entry, False otherwise.
         """
-        edge_configs = data_configs["edges"]  # type: Sequence[StructureConfig]
+        edge_configs: Sequence[EdgeConfig] = data_configs["edges"]
 
         for edge_config in edge_configs:
             if edge_config.label_configs:
                 return True
 
-        node_configs = data_configs["nodes"]  # type: Sequence[StructureConfig]
+        node_configs: Sequence[NodeConfig] = data_configs["nodes"]
 
         for node_config in node_configs:
             if node_config.label_configs:
@@ -367,9 +394,7 @@ class DistHeterogeneousGraphLoader(object):
 
         return False
 
-    def _initialize_metadata_dict(
-        self, data_configs: Mapping[str, Sequence[StructureConfig]]
-    ) -> Dict:
+    def _initialize_metadata_dict(self, data_configs: Mapping[str, DataConfigsSequence]) -> Dict:
         """Initializes the metadata dict that will be created as output.
 
         This dict is required downstream by the graph partitioning task,
@@ -390,7 +415,7 @@ class DistHeterogeneousGraphLoader(object):
             will later be further populated during graph processing.
         """
         metadata_dict = {}
-        edge_configs = data_configs["edges"]  # type: Sequence[EdgeConfig]
+        edge_configs: Sequence[EdgeConfig] = data_configs["edges"]
 
         node_type_set = set()
 
@@ -476,7 +501,6 @@ class DistHeterogeneousGraphLoader(object):
         input_df: DataFrame,
         full_output_path: str,
         out_format: str = "parquet",
-        num_files: Optional[int] = None,
     ) -> Sequence[str]:
         """Write a DataFrame to S3 or local storage, in the requested format (csv or parquet).
 
@@ -493,11 +517,6 @@ class DistHeterogeneousGraphLoader(object):
             We append the format name (csv/parquet) to the path before writing.
         out_format : str, optional
             "csv" or "parquet", by default "parquet"
-        num_files : Optional[int], optional
-             Number of partitions the file will be written with.
-            If None or -1 we let Spark choose the appropriate number. Note that choosing
-            a small number of partitions can have an adverse effect on performance.
-            Overrides value of self.num_output_files.
 
         Returns
         -------
@@ -516,9 +535,7 @@ class DistHeterogeneousGraphLoader(object):
             output_bucket = ""
             output_prefix = full_output_path
 
-        if num_files and num_files != -1:
-            input_df = input_df.coalesce(num_files)
-        elif self.num_output_files:
+        if self.num_output_files:
             input_df = input_df.coalesce(self.num_output_files)
 
         if out_format == "parquet":
@@ -583,7 +600,7 @@ class DistHeterogeneousGraphLoader(object):
             "Wrote %d files to %s, (%d requested)",
             len(filtered_key_list),
             full_output_path,
-            self.num_output_files,
+            self.num_output_files or -1,
         )
         return filtered_key_list
 
@@ -875,6 +892,12 @@ class DistHeterogeneousGraphLoader(object):
         )
         self.node_mapping_paths[node_type] = path_list
 
+        # Notify edge processing thread that a new mapping is available
+        logging.info(
+            "Notifying edge processing thread that mapping for ntype '%s' is available", node_type
+        )
+        self.new_mapping_event.set()
+
     def process_node_data(self, node_configs: Sequence[NodeConfig]) -> Dict:
         """Given a list of node config objects will perform the processing steps for each feature,
         write the output to S3 and return the corresponding dict entry for the node_data key of
@@ -898,119 +921,141 @@ class DistHeterogeneousGraphLoader(object):
         self.graph_info["nfeat_size"] = {}
         self.graph_info["ntype_label"] = []
         self.graph_info["ntype_label_property"] = []
-        for node_config in node_configs:
-            files = node_config.files
-            file_paths = [f"{self.input_prefix}/{f}" for f in files]
+        # for node_config in node_configs:
+        #     node_type, node_type_metadata_dicts = self._process_single_node_type(node_config)
+        #     if node_type_metadata_dicts:
+        #         if node_type in node_data_dict:
+        #             node_data_dict[node_type].update(node_type_metadata_dicts)
+        #         else:
+        #             node_data_dict[node_type] = node_type_metadata_dicts
 
-            node_type = node_config.ntype
-            node_col = node_config.node_col
-            logging.info(
-                "Processing data for node type %s with config: %s",
-                node_type,
-                node_config,
-            )
+        # Schedule all node processing jobs on the cluster
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            futures = [
+                executor.submit(
+                    self._process_single_node_type,
+                    node_config,
+                )
+                for node_config in node_configs
+            ]
+            concurrent.futures.wait(futures)
 
-            read_nodefile_start = perf_counter()
-            # TODO: Maybe we use same enforced type for Parquet and CSV
-            # to ensure consistent behavior downstream?
-            if node_config.format == "csv":
-                separator = node_config.separator
-                node_file_schema = schema_utils.parse_node_file_schema(node_config)
-                nodes_df_untyped = self.spark.read.csv(path=file_paths, sep=separator, header=True)
-                nodes_df_untyped = nodes_df_untyped.select(node_file_schema.fieldNames())
-                # Select only the columns referenced in the config
-                # and cast each column to the correct type
-                # TODO: It's possible that columns have different types from the
-                # expected type in the config. We need to handle conversions when needed.
-                nodes_df = nodes_df_untyped.select(
-                    *(
-                        F.col(col_name).cast(col_field.dataType).alias(col_name)
-                        for col_name, col_field in zip(
-                            node_file_schema.fieldNames(), node_file_schema.fields
-                        )
-                    )
-                )
-            else:
-                nodes_df = self.spark.read.parquet(*file_paths)
-
-            # TODO: Assert columns from config exist in the nodes df
-            self.timers["node_read_file"] += perf_counter() - read_nodefile_start
-
-            node_id_map_start_time = perf_counter()
-            if node_type in self.node_mapping_paths:
-                logging.warning(
-                    "Encountered node type '%s' that already has "
-                    "a mapping, skipping map creation",
-                    node_type,
-                )
-                # Use the existing mapping to convert the ids from str-to-int
-                mapping_df = self.spark.read.parquet(
-                    *[
-                        f"{self.output_prefix}/{map_path}"
-                        for map_path in self.node_mapping_paths[node_type]
-                    ]
-                )
-                node_df_with_ids = mapping_df.join(
-                    nodes_df, mapping_df[NODE_MAPPING_STR] == nodes_df[node_col], "left"
-                )
-                if self.enable_assertions:
-                    nodes_df_count = nodes_df.count()
-                    mapping_df_count = mapping_df.count()
-                    logging.warning(
-                        "Node mapping count for node type %s: %d", node_type, mapping_df_count
-                    )
-                    assert nodes_df_count == mapping_df_count, (
-                        f"Nodes df count ({nodes_df_count}) does not match "
-                        f"mapping df count ({mapping_df_count})"
-                    )
-                nodes_df = node_df_with_ids.withColumnRenamed(node_col, NODE_MAPPING_STR).orderBy(
-                    NODE_MAPPING_INT
-                )
-            else:
-                logging.info("Creating node str-to-int mapping for node type: %s", node_type)
-                nodes_df = self.create_node_id_map_from_nodes_df(nodes_df, node_col)
-                self._write_nodeid_mapping_and_update_state(nodes_df, node_type)
-
-            nodes_df.cache()
-            self.timers["node_map_creation"] += perf_counter() - node_id_map_start_time
-
-            node_type_metadata_dicts = {}
-            if node_config.feature_configs is not None:
-                process_node_features_start = perf_counter()
-                node_type_feature_metadata, ntype_feat_sizes = self._process_node_features(
-                    node_config.feature_configs, nodes_df, node_type
-                )
-                self.graph_info["nfeat_size"].update({node_type: ntype_feat_sizes})
-                node_type_metadata_dicts.update(node_type_feature_metadata)
-                self.timers["_process_node_features"] += (
-                    perf_counter() - process_node_features_start
-                )
-            if node_config.label_configs is not None:
-                process_node_labels_start = perf_counter()
-                node_type_label_metadata = self._process_node_labels(
-                    node_config.label_configs, nodes_df, node_type
-                )
-                node_type_metadata_dicts.update(node_type_label_metadata)
-                self.graph_info["ntype_label"].append(node_type)
-                self.graph_info["ntype_label_property"].append(
-                    node_config.label_configs[0].label_column
-                )
-                self.timers["_process_node_labels"] += perf_counter() - process_node_labels_start
-
+        for future in futures:
+            node_type, node_type_metadata_dicts = future.result()
             if node_type_metadata_dicts:
                 if node_type in node_data_dict:
                     node_data_dict[node_type].update(node_type_metadata_dicts)
                 else:
                     node_data_dict[node_type] = node_type_metadata_dicts
-            nodes_df.unpersist()
 
         logging.info("Finished processing node features")
         return node_data_dict
 
-    def _process_node_features(
+    def _process_single_node_type(self, node_config: NodeConfig) -> tuple[str, dict]:
+        files = node_config.files
+        file_paths = [f"{self.input_prefix}/{f}" for f in files]
+
+        node_type = node_config.ntype
+        node_col = node_config.node_col
+        logging.info(
+            "Processing data for node type '%s' with config: %s",
+            node_type,
+            node_config,
+        )
+
+        read_nodefile_start = perf_counter()
+        # TODO: Maybe we use same enforced type for Parquet and CSV
+        # to ensure consistent behavior downstream?
+        if node_config.format == "csv":
+            separator = node_config.separator
+            node_file_schema = schema_utils.parse_node_file_schema(node_config)
+            nodes_df_untyped = self.spark.read.csv(path=file_paths, sep=separator, header=True)
+            nodes_df_untyped = nodes_df_untyped.select(node_file_schema.fieldNames())
+            # Select only the columns referenced in the config
+            # and cast each column to the correct type
+            # TODO: It's possible that columns have different types from the
+            # expected type in the config. We need to handle conversions when needed.
+            nodes_df = nodes_df_untyped.select(
+                *(
+                    F.col(col_name).cast(col_field.dataType).alias(col_name)
+                    for col_name, col_field in zip(
+                        node_file_schema.fieldNames(), node_file_schema.fields
+                    )
+                )
+            )
+        else:
+            relevant_cols = schema_utils.select_relevant_columns(node_config)
+            nodes_df = self.spark.read.parquet(*file_paths).select(*relevant_cols)
+
+        self.timers["node_read_file"] += perf_counter() - read_nodefile_start
+
+        node_id_map_start_time = perf_counter()
+        if node_type in self.node_mapping_paths:
+            logging.warning(
+                "Encountered node type '%s' that already has a mapping, skipping map creation",
+                node_type,
+            )
+            # Use the existing mapping to convert the ids from str-to-int
+            mapping_df = self.spark.read.parquet(
+                *[
+                    f"{self.output_prefix}/{map_path}"
+                    for map_path in self.node_mapping_paths[node_type]
+                ]
+            )
+            node_df_with_ids = mapping_df.join(
+                nodes_df, mapping_df[NODE_MAPPING_STR] == nodes_df[node_col], "left"
+            )
+            nodes_df = node_df_with_ids.withColumnRenamed(node_col, NODE_MAPPING_STR).orderBy(
+                NODE_MAPPING_INT
+            )
+
+            if self.enable_assertions:
+                nodes_df_count = nodes_df.count()
+                mapping_df_count = mapping_df.count()
+                logging.warning(
+                    "Node mapping count for node type '%s': %d", node_type, mapping_df_count
+                )
+                assert nodes_df_count == mapping_df_count, (
+                    f"Nodes df count ({nodes_df_count}) does not match "
+                    f"mapping df count ({mapping_df_count})"
+                )
+        else:
+            logging.info("Creating node str-to-int mapping for node type: '%s'", node_type)
+            nodes_df = self.create_node_id_map_from_nodes_df(nodes_df, node_col)
+            self._write_nodeid_mapping_and_update_state(nodes_df, node_type)
+
+        nodes_df.cache()
+        self.timers["node_map_creation"] += perf_counter() - node_id_map_start_time
+
+        node_type_metadata_dicts = {}
+        if node_config.feature_configs is not None:
+            process_node_features_start = perf_counter()
+            node_type_feature_metadata, ntype_feat_sizes = self._process_ntype_features(
+                node_config.feature_configs, nodes_df, node_type
+            )
+            self.graph_info["nfeat_size"].update({node_type: ntype_feat_sizes})
+            node_type_metadata_dicts.update(node_type_feature_metadata)
+            self.timers["_process_node_features"] += perf_counter() - process_node_features_start
+        if node_config.label_configs is not None:
+            process_node_labels_start = perf_counter()
+            node_type_label_metadata = self._process_ntype_labels(
+                node_config.label_configs, nodes_df, node_type
+            )
+            node_type_metadata_dicts.update(node_type_label_metadata)
+            self.graph_info["ntype_label"].append(node_type)
+            self.graph_info["ntype_label_property"].append(
+                node_config.label_configs[0].label_column
+            )
+            self.timers["_process_node_labels"] += perf_counter() - process_node_labels_start
+
+        nodes_df.unpersist()
+
+        return node_type, node_type_metadata_dicts
+
+    def _process_ntype_features(
         self, feature_configs: Sequence[FeatureConfig], nodes_df: DataFrame, node_type: str
     ) -> Tuple[Dict, Dict]:
-        """Transform node features and write to storage.
+        """Transform node features for a single node type and write to storage.
 
         Given a list of feature config objects for a particular node type,
         will perform the processing steps for each feature,
@@ -1035,9 +1080,52 @@ class DistHeterogeneousGraphLoader(object):
             as  values, and the second has the lengths of the
             vector representations of the features as values.
         """
-        node_type_feature_metadata = {}
-        ntype_feat_sizes = {}  # type: Dict[str, int]
 
+        @dataclass
+        class ProcessedFeature:
+            """Dataclass to hold the processed feature data."""
+
+            feature_name: str
+            processed_df: DataFrame
+            node_type: str
+            transformation_name: str
+
+        # TODO: Is it possible that we will encounter thread-safety issues with these?
+        node_type_feature_metadata = {}
+        ntype_feat_sizes: dict[str, int] = {}
+
+        processed_features: list[ProcessedFeature] = []
+
+        def write_processed_feature(
+            feat_name: str,
+            single_feature_df: DataFrame,
+            node_type: str,
+            transformation_name: str,
+        ):
+            feature_output_path = os.path.join(
+                self.output_prefix, f"node_data/{node_type}-{feat_name}"
+            )
+            logging.info("Writing output for feat_name: '%s' to %s", feat_name, feature_output_path)
+
+            path_list = self._write_df(
+                single_feature_df, feature_output_path, out_format=FORMAT_NAME
+            )
+
+            node_feature_metadata_dict = {
+                "format": {"name": FORMAT_NAME, "delimiter": DELIMITER},
+                "data": path_list,
+            }
+            node_type_feature_metadata[feat_name] = node_feature_metadata_dict
+
+            feat_val = single_feature_df.take(1)[0].asDict().get(feat_name, None)
+            nfeat_size = 1 if isinstance(feat_val, (int, float)) else len(feat_val)
+            ntype_feat_sizes.update({feat_name: nfeat_size})
+
+            self.timers[f"{transformation_name}-{node_type}-{feat_name}"] = (
+                perf_counter() - node_transformation_start
+            )
+
+        # Gather all the transformation jobs but do not call the write action yet
         for feat_conf in feature_configs:
             # This will get a value iff there exists a pre-computed representation
             # for this feature name and node type, an empty dict (which evaluates to False)
@@ -1055,7 +1143,9 @@ class DistHeterogeneousGraphLoader(object):
                 )
 
             transformed_feature_df, json_representation = transformer.apply_transformation(nodes_df)
-            transformed_feature_df.cache()
+            # Cache DF only if we will end up using the computation more than once
+            if len(feat_conf.cols) > 1 or feat_conf.feat_type == HUGGINGFACE_TRANSFORM:
+                transformed_feature_df.cache()
 
             # Will evaluate False for empty dict, only create representations when needed
             if json_representation:
@@ -1063,74 +1153,68 @@ class DistHeterogeneousGraphLoader(object):
                     feat_conf.feat_name
                 ] = json_representation
 
-            def write_processed_feature(
-                feat_name: str,
-                single_feature_df: DataFrame,
-                node_type: str,
-                transformer: DistFeatureTransformer,
-            ):
-                feature_output_path = os.path.join(
-                    self.output_prefix, f"node_data/{node_type}-{feat_name}"
-                )
-                logging.info(
-                    "Writing output for feat_name: '%s' to %s", feat_name, feature_output_path
-                )
-                path_list = self._write_df(
-                    single_feature_df, feature_output_path, out_format=FORMAT_NAME
-                )
-
-                node_feature_metadata_dict = {
-                    "format": {"name": FORMAT_NAME, "delimiter": DELIMITER},
-                    "data": path_list,
-                }
-                node_type_feature_metadata[feat_name] = node_feature_metadata_dict
-
-                feat_val = single_feature_df.take(1)[0].asDict().get(feat_name, None)
-                nfeat_size = 1 if isinstance(feat_val, (int, float)) else len(feat_val)
-                ntype_feat_sizes.update({feat_name: nfeat_size})
-
-                self.timers[f"{transformer.get_transformation_name()}-{node_type}-{feat_name}"] = (
-                    perf_counter() - node_transformation_start
-                )
-
             # TODO: Remove hack with [feat_conf.feat_name]
             for feat_name, feat_col in zip([feat_conf.feat_name], feat_conf.cols):
                 node_transformation_start = perf_counter()
 
                 if (
-                    feat_conf.feat_type == HUGGINGFACE_TRANFORM
+                    feat_conf.feat_type == HUGGINGFACE_TRANSFORM
                     and feat_conf.transformation_kwargs["action"] == HUGGINGFACE_TOKENIZE
                 ):
                     for bert_feat_name in ["input_ids", "attention_mask", "token_type_ids"]:
                         single_feature_df = transformed_feature_df.select(bert_feat_name)
-                        write_processed_feature(
-                            bert_feat_name,
-                            single_feature_df,
-                            node_type,
-                            transformer,
+                        processed_features.append(
+                            ProcessedFeature(
+                                bert_feat_name,
+                                single_feature_df,
+                                node_type,
+                                transformer.get_transformation_name(),
+                            )
                         )
                 else:
                     single_feature_df = transformed_feature_df.select(feat_col).withColumnRenamed(
                         feat_col, feat_name
                     )
-                    write_processed_feature(
-                        feat_name,
-                        single_feature_df,
-                        node_type,
-                        transformer,
+                    processed_features.append(
+                        ProcessedFeature(
+                            feat_name,
+                            single_feature_df,
+                            node_type,
+                            transformer.get_transformation_name(),
+                        )
                     )
 
-            # Unpersist and move on to next feature
-            transformed_feature_df.unpersist()
+            # Conditionally unpersist and move on to next feature
+            if len(feat_conf.cols) > 1 or feat_conf.feat_type == HUGGINGFACE_TRANSFORM:
+                transformed_feature_df.unpersist()
+
+        # Submit all the jobs for the features together, to allow the Spark scheduler to
+        # better allocate resources.
+        # Limit concurrent feature jobs to 4 per node type. Max node types is also 4,
+        # so at most we'll launch 16 jobs for node processing
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            futures = [
+                executor.submit(
+                    write_processed_feature,
+                    feat.feature_name,
+                    feat.processed_df,
+                    feat.node_type,
+                    feat.feature_name,
+                )
+                for feat in processed_features
+            ]
+            concurrent.futures.wait(futures)
 
         return node_type_feature_metadata, ntype_feat_sizes
 
-    def _process_node_labels(
+    def _process_ntype_labels(
         self, label_configs: Sequence[LabelConfig], nodes_df: DataFrame, node_type: str
     ) -> Dict:
-        """
+        """Create labels for a single node type.
+
+
         Given a list of label config objects will perform the processing steps for each label,
-        write the output to S3 and return the corresponding dict entry for the labels of node_type
+        write the output to S3 and return the corresponding dict entry for the labels of `node_type`
         for metadata.json
         """
         node_type_label_metadata = {}
@@ -1309,7 +1393,7 @@ class DistHeterogeneousGraphLoader(object):
         # all downstream DataFrames, but it causes a full shuffle.
         # Can it be avoided?
         edge_df_with_int_ids = edge_df_with_int_ids.drop(src_col, dst_col).repartition(
-            self.num_output_files
+            self.spark.sparkContext.defaultParallelism
         )
         edge_df_with_int_ids_and_all_features = edge_df_with_int_ids
         edge_df_with_only_int_ids = edge_df_with_int_ids.select(["src_int_id", "dst_int_id"])
@@ -1371,9 +1455,197 @@ class DistHeterogeneousGraphLoader(object):
             )
         else:
             # TODO: Need tests for Parquet input
-            edges_df = self.spark.read.parquet(*file_paths)
+            relevant_cols = schema_utils.select_relevant_columns(edge_config)
+            edges_df = self.spark.read.parquet(*file_paths).select(*relevant_cols)
 
         return edges_df
+
+    def process_edge_data_async(
+        self, edge_configs: Sequence[EdgeConfig], edge_data_dict: dict, edges_dict: dict
+    ):
+        """Given a list of edge config objects will extract and write the edge structure
+        data to S3 or local storage, perform the processing steps for each feature,
+        and return a tuple with two dict entries for the metadata.json file.
+        The first element is aimed for the "edge_data" key that describes the edge features,
+        and the second being the "edges" key that describes the edge structures.
+
+
+
+        Parameters
+        ----------
+        edge_configs : Sequence[EdgeConfig]
+            A list of `EdgeConfig` objects describing all the edge types in the graph.
+        edge_data_dict: dict
+            The "edge_data" key in the metadata.json output. Modified in-place.
+        edges_dict: dict
+            The "edges" key in the metadata.json output. Modified in-place.
+
+        """
+        logging.info("Processing edge data...")
+        self.graph_info["efeat_size"] = {}
+        self.graph_info["etype_label"] = []
+        self.graph_info["etype_label_property"] = []
+
+        etypes_to_edge_config: dict[str, EdgeConfig] = {}
+        for edge_config in edge_configs:
+            src_ntype = edge_config.src_ntype
+            dst_ntype = edge_config.dst_ntype
+            edge_type = (
+                f"{edge_config.src_ntype}:{edge_config.get_relation_name()}:{edge_config.dst_ntype}"
+            )
+            etypes_to_edge_config[edge_type] = edge_config
+
+            # Serial processing of edge types
+            # self.process_single_edge_type(edge_config, edges_dict, edge_data_dict)
+
+        # Let's say we got a signal that a new node type mapping has been created,
+        # let's see which edge types can now be scheduled
+        while len(etypes_to_edge_config) > 0:
+            # Wait for a new node type to become available as a mapping
+            self.new_mapping_event.wait()
+            # Clear the event so that it can be re-set from other ntypes being ready
+            self.new_mapping_event.clear()
+            etypes_to_remove = []
+            configs_to_process = []
+            for edge_type, edge_config in copy.deepcopy(etypes_to_edge_config).items():
+                src_ntype = edge_config.src_ntype
+                dst_ntype = edge_config.dst_ntype
+                # Collect edge configs to process, and edge types to remove after processing
+                if src_ntype in self.node_mapping_paths and dst_ntype in self.node_mapping_paths:
+                    logging.info(
+                        "Mappings for edge type %s are now available, starting to process edge...",
+                        edge_type,
+                    )
+                    etypes_to_remove.append(edge_type)
+                    configs_to_process.append(edge_config)
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+                futures = [
+                    executor.submit(
+                        self.process_single_edge_type, config, edges_dict, edge_data_dict
+                    )
+                    for config in configs_to_process
+                ]
+                concurrent.futures.wait(futures)
+
+            for edge_type in etypes_to_remove:
+                etypes_to_edge_config.pop(edge_type)
+
+            logging.info(
+                "Finished processing edge types %s, remaining edge types: %s.",
+                etypes_to_remove,
+                list(etypes_to_edge_config.keys()),
+            )
+
+        logging.info("All edge types have now been processed, returning to main thread.")
+
+    def process_single_edge_type(
+        self, edge_config: EdgeConfig, edges_dict: dict, edges_data_dict: dict
+    ):
+        """Processes a single edge type and updates the input edges_dict and edges_data_dict.
+
+        Parameters
+        ----------
+        edge_config : EdgeConfig
+            Configuration object for edge type
+        edges_dict : dict
+            Dictionary corresponding to "edges" key in output metadata.json.
+            This is modified in-place.
+        edges_data_dict : dict
+            Dictionary corresponding to "edge_data" key in output metadata.json.
+            This is modified in-place.
+
+        Raises
+        ------
+        NotImplementedError
+            When trying to process an edge type with multiple relation types.
+        """
+        read_edges_start = perf_counter()
+        edges_df = self._read_edge_df(edge_config)
+        # TODO: Assert columns from config exist in the edge df
+
+        # This will throw an "already cached" warning if
+        # we created mappings from the edges alone
+        edges_df.cache()
+        edge_type = (
+            f"{edge_config.src_ntype}:{edge_config.get_relation_name()}:{edge_config.dst_ntype}"
+        )
+        reverse_edge_type = (
+            f"{edge_config.dst_ntype}"
+            f":{edge_config.get_relation_name()}-rev"
+            f":{edge_config.src_ntype}"
+        )
+        logging.info("Processing edge type '%s'...", edge_type)
+
+        # The following performs the str-to-node-id mapping conversion
+        # on the edge files and writes them to S3, along with their reverse.
+        edges_df, edge_structure_path_list, reverse_edge_path_list = self.write_edge_structure(
+            edges_df, edge_config
+        )
+        self.timers["read_edges_and_write_structure"] += perf_counter() - read_edges_start
+
+        edges_metadata_dict = {
+            "format": {"name": FORMAT_NAME, "delimiter": DELIMITER},
+            "data": edge_structure_path_list,
+        }
+        edges_dict[edge_type] = edges_metadata_dict
+
+        if self.add_reverse_edges:
+            reverse_edges_metadata_dict = {
+                "format": {"name": FORMAT_NAME, "delimiter": DELIMITER},
+                "data": reverse_edge_path_list,
+            }
+
+            edges_dict[reverse_edge_type] = reverse_edges_metadata_dict
+
+        # Without features or labels
+        if edge_config.feature_configs is None and edge_config.label_configs is None:
+            logging.info("No features or labels for edge type: %s", edge_type)
+        # With features or labels
+        else:
+            # TODO: Add unit tests for this branch
+            relation_col = edge_config.rel_col
+            edge_type_metadata_dicts = {}
+
+            if edge_config.feature_configs is not None:
+                edge_feature_start = perf_counter()
+                edge_feature_metadata_dicts, etype_feat_sizes = self._process_edge_features(
+                    edge_config.feature_configs, edges_df, edge_type
+                )
+                self.graph_info["efeat_size"].update({edge_type: etype_feat_sizes})
+                edge_type_metadata_dicts.update(edge_feature_metadata_dicts)
+                self.timers["_process_edge_features"] += perf_counter() - edge_feature_start
+            if edge_config.label_configs is not None:
+                if relation_col is None or relation_col == "":
+                    edge_label_start = perf_counter()
+                    # All edges have the same relation type
+                    label_metadata_dicts = self._process_edge_labels(
+                        edge_config.label_configs, edges_df, edge_type, edge_config.rel_type
+                    )
+                    edge_type_metadata_dicts.update(label_metadata_dicts)
+                    self.graph_info["etype_label"].append(edge_type)
+                    self.graph_info["etype_label"].append(reverse_edge_type)
+                    if edge_config.label_configs[0].task_type != "link_prediction":
+                        self.graph_info["etype_label_property"].append(
+                            edge_config.label_configs[0].label_column
+                        )
+
+                    if self.add_reverse_edges:
+                        # For reverse edges only the label metadata
+                        # (labels + split masks) are relevant.
+                        edges_data_dict[reverse_edge_type] = label_metadata_dicts
+                    self.timers["_process_edge_labels"] += perf_counter() - edge_label_start
+                else:
+                    # Different edges can have different relation types
+                    # TODO: For each rel_type we need get the label and output it separately.
+                    # We'll create one file output per rel_type, with the labels for each type
+                    raise NotImplementedError(
+                        "Currently we do not support loading edge "
+                        "labels with multiple edge relation types"
+                    )
+            if edge_type_metadata_dicts:
+                edges_data_dict[edge_type] = edge_type_metadata_dicts
+            edges_df.unpersist()
 
     def process_edge_data(self, edge_configs: Sequence[EdgeConfig]) -> Tuple[Dict, Dict]:
         """Given a list of edge config objects will extract and write the edge structure
@@ -1573,7 +1845,7 @@ class DistHeterogeneousGraphLoader(object):
                 edge_feature_start = perf_counter()
 
                 if (
-                    feat_conf.feat_type == HUGGINGFACE_TRANFORM
+                    feat_conf.feat_type == HUGGINGFACE_TRANSFORM
                     and feat_conf.transformation_kwargs["action"] == HUGGINGFACE_TOKENIZE
                 ):
                     for bert_feat_name in ["input_ids", "attention_mask", "token_type_ids"]:
@@ -1801,7 +2073,7 @@ class DistHeterogeneousGraphLoader(object):
             If an empty string, all rows in the input_df are included in one of train/val/test sets.
         split_rates: Optional[SplitRates]
             A SplitRates object indicating the train/val/test split rates.
-            If None, a default split rate of 0.9:0.05:0.05 is used.
+            If None, a default split rate of 0.8:0.1:0.1 is used.
         output_path: str
             The output path under which we write the masks.
         custom_split_file: Optional[CustomSplit]
@@ -1884,9 +2156,13 @@ class DistHeterogeneousGraphLoader(object):
                 raise RuntimeError(f"Provided split rates  do not sum to 1: {split_rates}")
 
         split_list = split_rates.tolist()
+        if label_column == "":
+            message = "Creating split files for link prediction"
+        else:
+            message = f"Creating split files for label column '{label_column}'"
         logging.info(
-            "Creating split files for label column '%s' with split rates: %s",
-            label_column,
+            "%s, with split rates: %s",
+            message,
             split_list,
         )
 
@@ -1901,8 +2177,13 @@ class DistHeterogeneousGraphLoader(object):
 
         group_col_name = "sample_boolean_mask"  # TODO: Ensure uniqueness of column?
 
-        # TODO: Use PandasUDF and check if it is faster than UDF
         split_group = F.udf(multinomial_sample, ArrayType(IntegerType()))
+        # major, minor = VersionUtils.majorMinorVersion(pyspark.__version__)
+        # if major >= 3 and minor >= 5:
+        #     # Use ArrowUDF for better performance
+        #     split_group = F.udf(multinomial_sample, ArrayType(IntegerType()), useArrow=True)
+        # else:
+        #     split_group = F.udf(multinomial_sample, ArrayType(IntegerType()))
         # Convert label col to string and apply UDF
         # to create one-hot vector indicating train/test/val membership
         input_col = F.col(label_column).astype("string") if label_column else F.lit("dummy")

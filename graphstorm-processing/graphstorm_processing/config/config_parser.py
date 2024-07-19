@@ -17,7 +17,7 @@ Configuration parsing for edges and nodes
 """
 
 from abc import ABC
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, TypeVar
 
 from graphstorm_processing.constants import SUPPORTED_FILE_TYPES
 from .label_config_base import LabelConfig, EdgeLabelConfig, NodeLabelConfig
@@ -151,6 +151,14 @@ class StructureConfig(ABC):
         assert self.format in SUPPORTED_FILE_TYPES
         assert isinstance(self._feature_configs, list)
         assert isinstance(self._labels, list)
+
+
+# Define a TypeVar that allows us to bound annotations to objects of
+# a subclass of StructureConfig
+# See https://docs.python.org/3/library/typing.html#typing.TypeVar
+StructureConfigT = TypeVar("StructureConfigT", bound=StructureConfig)
+# Define a type alias for a Sequence of StructureConfigT objects
+DataConfigsSequence = Sequence[StructureConfigT]
 
 
 class EdgeConfig(StructureConfig):

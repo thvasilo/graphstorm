@@ -380,6 +380,56 @@ def test_write_edge_structure_no_reverse_edges(
     assert len(rev_edge_path_list) == 0
 
 
+@pytest.fixture(name="user_rated_movie_parquet_path")
+def parquet_edges_fixture(
+    dghl_loader_no_reverse_edges: DistHeterogeneousGraphLoader, user_rated_movie_df: DataFrame
+):
+    """Saves the user_rated_movie_df as a Parquet file to test using Parquet input"""
+    edges_subpath = "edges/parquet/user-rate-movie/"
+    parquet_edges_path = os.path.join(dghl_loader_no_reverse_edges.input_prefix, edges_subpath)
+    user_rated_movie_df.write.parquet(parquet_edges_path)
+    yield edges_subpath
+    # Cleanup code
+    shutil.rmtree(parquet_edges_path)
+
+
+def test_processed_edges_parquet_file(
+    data_configs_with_label,
+    dghl_loader_no_reverse_edges: DistHeterogeneousGraphLoader,
+    user_rated_movie_parquet_path: str,
+):
+    """Process edge structure with Parquet files as input"""
+    edge_configs = data_configs_with_label["edges"]
+
+    # We need these two for the side-effects of creating the mappings
+    missing_node_types = dghl_loader_no_reverse_edges._get_missing_node_types(edge_configs, [])
+    dghl_loader_no_reverse_edges.create_node_id_maps_from_edges(edge_configs, missing_node_types)
+
+    edge_dict: Dict[str, Dict] = {
+        "data": {
+            "format": "parquet",
+            "files": [user_rated_movie_parquet_path],
+        },
+        "source": {"column": "~from", "type": "user"},
+        "relation": {"type": "rated"},
+        "dest": {"column": "~to", "type": "movie"},
+    }
+
+    edge_config = EdgeConfig(edge_dict, edge_dict["data"])
+    edge_data_values, edges_values = dghl_loader_no_reverse_edges.process_edge_data([edge_config])
+
+    # No features or labels for this edge type
+    assert edge_data_values == {}
+    # We only passed a single edge type to be processed
+    assert len(edges_values) == 1
+    assert "user:rated:movie" in edges_values
+    assert edges_values["user:rated:movie"]["format"] == {
+        "name": "parquet",
+        "delimiter": "",
+    }
+    assert "data" in edges_values["user:rated:movie"]
+
+
 def test_create_all_mapppings_from_edges(
     spark: SparkSession,
     data_configs_with_label,
@@ -743,7 +793,7 @@ def test_node_custom_label(spark, dghl_loader: DistHeterogeneousGraphLoader, tmp
     }
     dghl_loader.input_prefix = ""
     label_configs = [NodeLabelConfig(config_dict)]
-    label_metadata_dicts = dghl_loader._process_node_labels(label_configs, nodes_df, "orig")
+    label_metadata_dicts = dghl_loader._process_ntype_labels(label_configs, nodes_df, "orig")
 
     assert label_metadata_dicts.keys() == {"train_mask", "test_mask", "val_mask", "orig"}
 

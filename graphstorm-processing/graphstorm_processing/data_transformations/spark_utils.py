@@ -57,6 +57,7 @@ def create_spark_session(
         SparkSession.builder.appName("GSProcessing")
         .config("spark.hadoop.validateOutputSpecs", "false")
         .config("spark.logConf", "true")
+        .config("spark.scheduler.mode", "FAIR")
     )
 
     if execution_env == ExecutionEnv.SAGEMAKER or execution_env == ExecutionEnv.LOCAL:
@@ -105,9 +106,10 @@ def create_spark_session(
     hadoop_config.set("fs.s3.maxConnections", "5000")
     hadoop_config.set("fs.s3.maxRetries", "20")
     hadoop_config.set("fs.s3a.connection.maximum", "150")
+    hadoop_config.set("fs.s3a.fast.upload", "true")
 
-    # Set up auth for local and EMR
-    if execution_env != ExecutionEnv.SAGEMAKER and filesystem_type == FilesystemType.S3:
+    # Set up auth for local
+    if execution_env == ExecutionEnv.LOCAL and filesystem_type == FilesystemType.S3:
         hadoop_config.set(
             "fs.s3a.aws.credentials.provider",
             "com.amazonaws.auth.DefaultAWSCredentialsProviderChain",
