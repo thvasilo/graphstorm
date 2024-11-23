@@ -97,3 +97,7 @@ SPARK_HADOOP_VERSIONS = {
 
 ########## Precomputed transformations ################
 TRANSFORMATIONS_FILENAME = "precomputed_transformations.json"
+
+########## Hard-coded column names ####################
+NODE_MAPPING_STR = "orig"
+NODE_MAPPING_INT = "new"

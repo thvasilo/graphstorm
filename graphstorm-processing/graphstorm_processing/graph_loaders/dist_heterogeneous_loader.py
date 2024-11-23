@@ -47,6 +47,8 @@ from graphstorm_processing.constants import (
     SPECIAL_CHARACTERS,
     HUGGINGFACE_TRANFORM,
     HUGGINGFACE_TOKENIZE,
+    NODE_MAPPING_INT,
+    NODE_MAPPING_STR,
     TRANSFORMATIONS_FILENAME,
 )
 from graphstorm_processing.config.config_parser import (
@@ -71,8 +73,6 @@ from .row_count_utils import ParquetRowCounter
 
 FORMAT_NAME = "parquet"
 DELIMITER = "" if FORMAT_NAME == "parquet" else ","
-NODE_MAPPING_STR = "orig"
-NODE_MAPPING_INT = "new"
 CUSTOM_DATA_SPLIT_ORDER = "custom_split_order_flag"
 
 
@@ -1012,7 +1012,7 @@ class DistHeterogeneousGraphLoader(object):
                 nodes_df = self.create_node_id_map_from_nodes_df(nodes_df, node_col)
                 self._write_nodeid_mapping_and_update_state(nodes_df, node_type)
 
-            nodes_df.cache()
+            nodes_df_with_ids = nodes_df.cache()
             self.timers["node_map_creation"] += perf_counter() - node_id_map_start_time
 
             node_type_metadata_dicts = {}
@@ -1029,7 +1029,7 @@ class DistHeterogeneousGraphLoader(object):
             if node_config.label_configs is not None:
                 process_node_labels_start = perf_counter()
                 node_type_label_metadata = self._process_node_labels(
-                    node_config.label_configs, nodes_df, node_type
+                    node_config.label_configs, nodes_df_with_ids, node_type
                 )
                 node_type_metadata_dicts.update(node_type_label_metadata)
 
@@ -1200,7 +1200,7 @@ class DistHeterogeneousGraphLoader(object):
         return node_type_feature_metadata, ntype_feat_sizes
 
     def _process_node_labels(
-        self, label_configs: Sequence[LabelConfig], nodes_df: DataFrame, node_type: str
+        self, label_configs: Sequence[LabelConfig], nodes_df_with_ids: DataFrame, node_type: str
     ) -> Dict:
         """
         Given a list of label config objects will perform the processing steps for each label,
@@ -1220,7 +1220,11 @@ class DistHeterogeneousGraphLoader(object):
                 label_conf.label_column,
             )
 
-            transformed_label = node_label_loader.process_label(nodes_df)
+            transformed_label = (
+                node_label_loader.process_label(nodes_df_with_ids)
+                .orderBy(NODE_MAPPING_INT)
+                .drop(NODE_MAPPING_INT)
+            )
             self.graph_info["label_map"] = node_label_loader.label_map
 
             label_output_path = (
@@ -1235,7 +1239,7 @@ class DistHeterogeneousGraphLoader(object):
             }
             node_type_label_metadata[label_conf.label_column] = label_metadata_dict
 
-            self._update_label_properties(node_type, nodes_df, label_conf)
+            self._update_label_properties(node_type, nodes_df_with_ids, label_conf)
 
             split_masks_output_prefix = f"{self.output_prefix}/node_data/{node_type}"
 
@@ -1262,7 +1266,7 @@ class DistHeterogeneousGraphLoader(object):
             else:
                 custom_split_filenames = None
             label_split_dicts = self._create_split_files(
-                nodes_df,
+                nodes_df_with_ids,
                 label_conf.label_column,
                 split_rates,
                 split_masks_output_prefix,
@@ -1983,7 +1987,7 @@ class DistHeterogeneousGraphLoader(object):
 
     def _create_split_files_split_rates(
         self,
-        input_df: DataFrame,
+        input_df_with_ids: DataFrame,
         label_column: str,
         split_rates: Optional[SplitRates],
         seed: Optional[int],
@@ -1994,7 +1998,7 @@ class DistHeterogeneousGraphLoader(object):
 
         Parameters
         ----------
-        input_df: DataFrame
+        input_df_with_ids: DataFrame
             Input dataframe for which we will create split masks.
         label_column: str
             The name of the label column. If provided, the values in the column
@@ -2050,10 +2054,12 @@ class DistHeterogeneousGraphLoader(object):
         # Convert label col to string and apply UDF
         # to create one-hot vector indicating train/test/val membership
         input_col = F.col(label_column).astype("string") if label_column else F.lit("dummy")
-        int_group_df = input_df.select(split_group(input_col).alias(group_col_name))
+        int_group_df = input_df_with_ids.select(
+            split_group(input_col).alias(group_col_name), NODE_MAPPING_INT
+        )
 
         # We cache because we re-use this DF 3 times
-        int_group_df.cache()
+        int_group_df = int_group_df.orderBy(NODE_MAPPING_INT).cache()
         # Use custom column names if requested
         if mask_field_names:
             mask_names = mask_field_names
