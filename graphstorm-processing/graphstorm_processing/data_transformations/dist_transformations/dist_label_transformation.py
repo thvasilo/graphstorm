@@ -46,6 +46,7 @@ class DistSingleLabelTransformation(DistributedTransformation):
     def apply(self, input_df: DataFrame) -> DataFrame:
         assert self.spark
         processed_col_name = self.label_column + "_processed"
+        other_cols = set(input_df.columns) - {self.label_column}
 
         str_indexer = StringIndexer(
             inputCol=self.label_column,
@@ -63,13 +64,18 @@ class DistSingleLabelTransformation(DistributedTransformation):
 
         # Labels that were missing and were assigned the value numLabels by the StringIndexer
         # are converted to None
-        long_class_label = indexed_df.select(F.col(self.label_column).cast("long")).select(
-            F.when(
-                F.col(self.label_column) == len(str_indexer_model.labelsArray[0]),  # type: ignore
-                F.lit(None),
-            )
-            .otherwise(F.col(self.label_column))
-            .alias(self.label_column)
+        long_class_label = indexed_df.select(
+            F.col(self.label_column).cast("long"), *other_cols
+        ).select(
+            (
+                F.when(
+                    F.col(self.label_column) == len(str_indexer_model.labelsArray[0]),
+                    F.lit(None),
+                )
+                .otherwise(F.col(self.label_column))
+                .alias(self.label_column)
+            ),
+            *other_cols,
         )
 
         # Get a mapping from original label to encoded value
