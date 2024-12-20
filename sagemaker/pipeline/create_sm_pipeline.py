@@ -385,8 +385,6 @@ class GraphStormPipelineGenerator:
             ],
         )
 
-        print(gsprocessing_config.expr)
-
         gsprocessing_arguments = [
             "--config-filename",
             self.graphconstruct_config_param,
@@ -404,7 +402,7 @@ class GraphStormPipelineGenerator:
 
         if args.graph_construction_config.graph_construction_args:
             gsprocessing_arguments.extend(
-                args.graph_construction_config.graph_construction_args
+                args.graph_construction_config.graph_construction_args.split(" ")
             )
 
         gsprocessing_config_input = ProcessingInput(

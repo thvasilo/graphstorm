@@ -262,6 +262,7 @@ def main():
         sys.exit(0)
 
     print(f"Pipeline execution started: {execution.describe()}")
+    print(f"Output will be created under: {execution_params['ExecutionSubpath']}")
     print(f"Execution ARN: {execution.arn}")
 
     if not args.async_execution:
