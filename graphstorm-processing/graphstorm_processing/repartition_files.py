@@ -89,7 +89,10 @@ class ParquetRepartitioner:
         self.input_prefix = input_prefix[5:] if input_prefix.startswith("s3://") else input_prefix
         self.filesystem_type = filesystem_type
         if self.filesystem_type == FilesystemType.S3:
-            self.bucket = self.input_prefix.split("/")[1]
+            # Expected input is bucket/path/to/file, no s3:// prefix
+            self.bucket = self.input_prefix.split("/")[0]
+            if not region:
+                region = s3_utils.get_bucket_region(self.bucket)
             self.pyarrow_fs = fs.S3FileSystem(
                 region=region,
                 retry_strategy=fs.AwsDefaultS3RetryStrategy(max_attempts=10),
@@ -1218,6 +1221,7 @@ def main():
     )
 
     # Get the metadata file
+    # TODO: For some reason region is not being picked up unless it's set as an env var?
     region = None
     if filesystem_type == FilesystemType.S3:
         bucket = input_prefix.split("/")[2]

@@ -18,6 +18,7 @@ import logging
 from typing import List, Optional
 
 import boto3
+import botocore
 from botocore.config import Config
 
 
@@ -65,8 +66,12 @@ def get_bucket_region(bucket: str, s3_boto_client: boto3.client = None) -> str:
     """
     Returns the region of the provided S3 bucket.
     """
+    assert bucket, "Bucket name cannot be empty"
     s3_boto_client = get_high_retry_s3_client() if s3_boto_client is None else s3_boto_client
-    response = s3_boto_client.head_bucket(Bucket=bucket)
+    try:
+        response = s3_boto_client.head_bucket(Bucket=bucket)
+    except botocore.exceptions.ClientError as e:
+        raise RuntimeError(f"Could not get region for bucket {bucket}") from e
     return response["ResponseMetadata"]["HTTPHeaders"]["x-amz-bucket-region"]
 
 

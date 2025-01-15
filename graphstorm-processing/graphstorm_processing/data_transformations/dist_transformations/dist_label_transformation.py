@@ -15,7 +15,7 @@ limitations under the License.
 """
 
 import json
-from typing import Dict, Sequence
+from typing import Sequence
 
 from pyspark.sql import DataFrame, functions as F, SparkSession
 from pyspark.ml.feature import StringIndexer
@@ -40,7 +40,7 @@ class DistSingleLabelTransformation(DistributedTransformation):
     def __init__(self, cols: Sequence[str], spark: SparkSession) -> None:
         super().__init__(cols)
         self.label_column = cols[0]
-        self.value_map = {}  # type: Dict[str, int]
+        self.value_map: dict[str, int] = {}
         self.spark = spark
 
     def apply(self, input_df: DataFrame) -> DataFrame:

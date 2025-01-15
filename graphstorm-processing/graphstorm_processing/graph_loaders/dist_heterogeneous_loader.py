@@ -16,7 +16,6 @@ limitations under the License.
 
 import json
 import logging
-import math
 import numbers
 import os
 from collections import Counter, defaultdict
@@ -25,26 +24,21 @@ from dataclasses import dataclass
 from time import perf_counter
 from typing import Any, Dict, Optional, Set, Tuple
 
+import numpy as np
+import pyarrow as pa
+from pyarrow import parquet as pq
 from pyspark import RDD
 from pyspark.sql import Row, SparkSession, DataFrame, functions as F
 from pyspark.sql.types import (
     StructType,
     StructField,
     StringType,
-    IntegerType,
     LongType,
-    ArrayType,
-    ByteType,
 )
-from pyspark.sql.functions import col, when, monotonically_increasing_id
-from numpy.random import default_rng
+
 
 from graphstorm_processing.constants import (
-    MIN_VALUE,
-    MAX_VALUE,
-    VALUE_COUNTS,
-    COLUMN_NAME,
-    SPECIAL_CHARACTERS,
+    DATA_SPLIT_SET_MASK_COL,
     HUGGINGFACE_TRANFORM,
     HUGGINGFACE_TOKENIZE,
     NODE_MAPPING_INT,
@@ -117,6 +111,7 @@ class HeterogeneousLoaderConfig:
     num_output_files: int
     output_prefix: str
     precomputed_transformations: dict
+    seed: Optional[int] = None
 
 
 @dataclass
@@ -253,6 +248,7 @@ class DistHeterogeneousGraphLoader(object):
         self.graph_name = loader_config.graph_name
         self.skip_train_masks = False
         self.pre_computed_transformations = loader_config.precomputed_transformations
+        self.seed = loader_config.seed
 
     def process_and_write_graph_data(
         self, data_configs: Mapping[str, Sequence[StructureConfig]]
@@ -602,17 +598,10 @@ class DistHeterogeneousGraphLoader(object):
 
         # Only include data files and strip the common output path prefix from the key
         filtered_key_list = []
-        if self.filesystem_type == "s3":
-            # Get the S3 key prefix without the bucket
-            common_prefix = self.output_prefix.split("/", maxsplit=3)[3]
-        else:
-            common_prefix = self.output_prefix
 
         for key in object_key_list:
             if key.endswith(".csv") or key.endswith(".parquet"):
-                chars_to_skip = len(common_prefix)
-                key_without_prefix = key[chars_to_skip:].lstrip("/")
-                filtered_key_list.append(key_without_prefix)
+                filtered_key_list.append(self._strip_common_prefix(key))
 
         logging.info(
             "Wrote %d files to %s, (%d requested)",
@@ -621,6 +610,29 @@ class DistHeterogeneousGraphLoader(object):
             self.num_output_files,
         )
         return filtered_key_list
+
+    def _strip_common_prefix(self, full_path: str) -> str:
+        """Strips the common prefix from the full path.
+
+        Parameters
+        ----------
+        full_path : str
+            Full path to the file, including the common prefix.
+
+        Returns
+        -------
+        str
+            The path without the common prefix.
+        """
+        if self.filesystem_type == "s3":
+            # Get the S3 key prefix without the bucket
+            common_prefix = self.output_prefix.split("/", maxsplit=3)[3]
+        else:
+            common_prefix = self.output_prefix
+
+        chars_to_skip = len(common_prefix)
+        key_without_prefix = full_path[chars_to_skip:].lstrip("/")
+        return key_without_prefix
 
     def _add_node_mappings_to_metadata(self, metadata_dict: Dict) -> Dict:
         """
@@ -1213,25 +1225,24 @@ class DistHeterogeneousGraphLoader(object):
                 "node_class" if label_conf.task_type == "classification" else "node_regression"
             )
             self.graph_info["is_multilabel"] = label_conf.multilabel
-            node_label_loader = DistLabelLoader(label_conf, self.spark)
+            node_label_loader = DistLabelLoader(label_conf, self.spark, self.input_prefix)
             logging.info(
                 "Processing label data for node type %s, label col: %s...",
                 node_type,
                 label_conf.label_column,
             )
 
-            transformed_label = (
-                node_label_loader.process_label(nodes_df_with_ids)
+            transformed_label_ordered_by_nid = (
+                node_label_loader.process_label(nodes_df_with_ids, NODE_MAPPING_INT)
                 .orderBy(NODE_MAPPING_INT)
-                .drop(NODE_MAPPING_INT)
+                .cache()
             )
-            self.graph_info["label_map"] = node_label_loader.label_map
 
             label_output_path = (
-                f"{self.output_prefix}/node_data/" f"{node_type}-label-{label_conf.label_column}"
+                f"{self.output_prefix}/node_data/{node_type}-label-{label_conf.label_column}"
             )
 
-            path_list = self._write_df(transformed_label, label_output_path)
+            path_list = self._write_df(transformed_label_ordered_by_nid, label_output_path)
 
             label_metadata_dict = {
                 "format": {"name": FORMAT_NAME, "delimiter": DELIMITER},
@@ -1239,9 +1250,13 @@ class DistHeterogeneousGraphLoader(object):
             }
             node_type_label_metadata[label_conf.label_column] = label_metadata_dict
 
-            self._update_label_properties(node_type, nodes_df_with_ids, label_conf)
-
             split_masks_output_prefix = f"{self.output_prefix}/node_data/{node_type}"
+
+            self.graph_info["label_map"] = node_label_loader.label_map
+
+            node_label_loader._update_label_properties(
+                self.label_properties, node_type, nodes_df_with_ids, label_conf
+            )
 
             logging.info(
                 "Creating train/test/val split for node type %s, label col: %s...",
@@ -1256,6 +1271,7 @@ class DistHeterogeneousGraphLoader(object):
                 )
             else:
                 split_rates = None
+
             if label_conf.custom_split_filenames:
                 custom_split_filenames = CustomSplit(
                     train=label_conf.custom_split_filenames["train"],
@@ -1265,15 +1281,25 @@ class DistHeterogeneousGraphLoader(object):
                 )
             else:
                 custom_split_filenames = None
-            label_split_dicts = self._create_split_files(
-                nodes_df_with_ids,
-                label_conf.label_column,
-                split_rates,
+
+            if label_conf.mask_field_names is not None:
+                mask_names = label_conf.mask_field_names
+            else:
+                mask_names = ("train_mask", "val_mask", "test_mask")
+
+            metadata_updates = self.create_mask_files(
                 split_masks_output_prefix,
-                custom_split_filenames,
-                mask_field_names=label_conf.mask_field_names,
+                node_label_loader,
+                node_type,
+                transformed_label_ordered_by_nid,
+                label_conf.label_column,
+                NODE_MAPPING_INT,
+                split_rates,
+                mask_field_names=mask_names,
+                custom_split_file=custom_split_filenames,
+                seed=self.seed,
             )
-            node_type_label_metadata.update(label_split_dicts)
+            node_type_label_metadata.update(metadata_updates)
 
         return node_type_label_metadata
 
@@ -1537,9 +1563,10 @@ class DistHeterogeneousGraphLoader(object):
 
         # The following performs the str-to-node-id mapping conversion
         # on the edge files and writes them to S3, along with their reverse.
-        edges_df, edge_structure_path_list, reverse_edge_path_list = self.write_edge_structure(
-            edges_df, edge_config
+        edges_df_int_ids, edge_structure_path_list, reverse_edge_path_list = (
+            self.write_edge_structure(edges_df, edge_config)
         )
+        # TODO: Do we need to re-order by order_col == dst_col here?
         self.timers["read_edges_and_write_structure"] += perf_counter() - read_edges_start
 
         edges_metadata_dict = {
@@ -1563,12 +1590,13 @@ class DistHeterogeneousGraphLoader(object):
         else:
             # TODO: Add unit tests for this branch
             relation_col = edge_config.rel_col
+            dst_col = edge_config.dst_col
             edge_type_metadata_dicts = {}
 
             if edge_config.feature_configs is not None:
                 edge_feature_start = perf_counter()
                 edge_feature_metadata_dicts, etype_feat_sizes = self._process_edge_features(
-                    edge_config.feature_configs, edges_df, edge_type
+                    edge_config.feature_configs, edges_df_int_ids, edge_type
                 )
                 self.graph_info["efeat_size"].update({edge_type: etype_feat_sizes})
                 edge_type_metadata_dicts.update(edge_feature_metadata_dicts)
@@ -1580,7 +1608,8 @@ class DistHeterogeneousGraphLoader(object):
                     # All edges have the same relation type
                     label_metadata_dicts = self._process_edge_labels(
                         edge_config.label_configs,
-                        edges_df,
+                        edges_df_int_ids,
+                        dst_col,
                         edge_type,
                         edge_config.rel_type,
                     )
@@ -1734,12 +1763,13 @@ class DistHeterogeneousGraphLoader(object):
     def _process_edge_labels(
         self,
         label_configs: Sequence[LabelConfig],
-        edges_df: DataFrame,
+        edges_df_int_ids: DataFrame,
+        order_col: str,
         edge_type: str,
         rel_type_prefix: str,
     ) -> Dict:
         """
-        Process edge labels and create train/test/val splits.
+        Process edge labels and create train/test/val splits for a single edge type.
         Transforms classification labels to single float values and multi-label ones
         to a multi-hot float-vector representation.
         For regression, float values are passed through as is.
@@ -1748,15 +1778,19 @@ class DistHeterogeneousGraphLoader(object):
         ----------
         label_configs : Sequence[LabelConfig]
             The labels to be processed.
-        edges_df : DataFrame
-            The edges dataframe containing the labels as columns.
+        edges_df_int_ids : DataFrame
+            The edges dataframe containing the labels as columns, along with int ids
+            for the src and destination.
+        order_col: str
+            The column we use to maintain the order of the original DF.
         edge_type : str
             The edge type, in <src_type:relation:dst_type> format.
         rel_type_prefix : str
             The prefix of the relation type.
             This is used to create the output path for the labels.
-            For example, if the relation type is "author" then the output path for the labels
-            will be "<output_prefix>/edge_data/<edge_type>-label-author".
+            For example, if the relation type is "wrote" for edge type
+            "author:wrote:paper" then the output path for the labels
+            will be "<output_prefix>/edge_data/author_wrote_paper-label-wrote".
 
         Returns
         -------
@@ -1766,6 +1800,7 @@ class DistHeterogeneousGraphLoader(object):
         edge features.
         """
         label_metadata_dicts = {}
+
         for label_conf in label_configs:
             if label_conf.task_type != "link_prediction":
                 edge_label_loader = DistLabelLoader(label_conf, self.spark)
@@ -1781,14 +1816,18 @@ class DistHeterogeneousGraphLoader(object):
                     label_conf.label_column,
                     edge_type,
                 )
-                transformed_label = edge_label_loader.process_label(edges_df)
+
+                # TODO: Do we need to re-order transformed_label by order_col
+                transformed_label = edge_label_loader.process_label(edges_df_int_ids, order_col)
 
                 label_output_path = os.path.join(
                     self.output_prefix,
                     f"edge_data/{edge_type.replace(':', '_')}-label-{rel_type_prefix}",
                 )
 
-                path_list = self._write_df(transformed_label, label_output_path)
+                path_list = self._write_df(
+                    transformed_label.select(label_conf.label_column), label_output_path
+                )
 
                 label_metadata_dict = {
                     "format": {"name": FORMAT_NAME, "delimiter": DELIMITER},
@@ -1796,7 +1835,9 @@ class DistHeterogeneousGraphLoader(object):
                 }
                 label_metadata_dicts[label_conf.label_column] = label_metadata_dict
 
-                self._update_label_properties(edge_type, edges_df, label_conf)
+                edge_label_loader._update_label_properties(
+                    self.label_properties, edge_type, edges_df_int_ids, label_conf
+                )
             else:
                 self.graph_info["task_type"] = "link_prediction"
                 logging.info(
@@ -1804,7 +1845,7 @@ class DistHeterogeneousGraphLoader(object):
                     rel_type_prefix,
                 )
 
-            split_masks_output_prefix = os.path.join(
+            edge_type_output_prefix = os.path.join(
                 self.output_prefix, f"edge_data/{edge_type.replace(':', '_')}"
             )
             logging.info("Creating train/test/val split for edge type %s...", edge_type)
@@ -1825,101 +1866,51 @@ class DistHeterogeneousGraphLoader(object):
                 )
             else:
                 custom_split_filenames = None
-            label_split_dicts = self._create_split_files(
-                edges_df,
+
+            if label_conf.custom_split_filenames:
+                custom_split_filenames = CustomSplit(
+                    train=label_conf.custom_split_filenames["train"],
+                    valid=label_conf.custom_split_filenames["valid"],
+                    test=label_conf.custom_split_filenames["test"],
+                    mask_columns=label_conf.custom_split_filenames["column"],
+                )
+            else:
+                custom_split_filenames = None
+
+            if label_conf.mask_field_names is not None:
+                mask_names = label_conf.mask_field_names
+            else:
+                mask_names = ("train_mask", "val_mask", "test_mask")
+
+            metadata_updates = self.create_mask_files(
+                edge_type_output_prefix,
+                edge_label_loader,
+                edge_type,
+                transformed_label,
                 label_conf.label_column,
+                order_col,
                 split_rates,
-                split_masks_output_prefix,
-                custom_split_filenames,
-                mask_field_names=label_conf.mask_field_names,
+                mask_field_names=mask_names,
+                custom_split_file=custom_split_filenames,
+                seed=self.seed,
             )
-            label_metadata_dicts.update(label_split_dicts)
+            label_metadata_dicts.update(metadata_updates)
 
         return label_metadata_dicts
 
-    def _update_label_properties(
+    def create_mask_files(
         self,
-        node_or_edge_type: str,
-        original_labels: DataFrame,
-        label_config: LabelConfig,
-    ) -> None:
-        """Extracts and stores statistics about labels.
-
-        For a given node or edge type, label configuration and the original
-        (non-transformed) label DataFrame, extract some statistics
-        and store them in `self.label_properties` to be written to
-        storage later. The statistics can be used by downstream tasks.
-
-        Parameters
-        ----------
-        node_or_edge_type : str
-            The node or edge type name for which the label information is being updated.
-        original_labels : DataFrame
-            The original (non-transformed) label DataFrame.
-        label_config : LabelConfig
-            The label configuration object.
-
-        Raises
-        ------
-        RuntimeError
-            In case an invalid task type name is specified in the label config.
-        """
-        label_col = label_config.label_column
-        if node_or_edge_type not in self.label_properties:
-            self.label_properties[node_or_edge_type] = Counter()
-        # TODO: Something wrong with the assignment here? Investigate
-        self.label_properties[node_or_edge_type][COLUMN_NAME] = label_col
-
-        if label_config.task_type == "regression":
-            label_min = original_labels.agg(F.min(label_col).alias("min")).collect()[0]["min"]
-            label_max = original_labels.agg(F.max(label_col).alias("max")).collect()[0]["max"]
-
-            current_min = self.label_properties[node_or_edge_type].get(MIN_VALUE, float("inf"))
-            current_max = self.label_properties[node_or_edge_type].get(MAX_VALUE, float("-inf"))
-            self.label_properties[node_or_edge_type][MIN_VALUE] = min(current_min, label_min)
-            self.label_properties[node_or_edge_type][MAX_VALUE] = max(current_max, label_max)
-        elif label_config.task_type == "classification":
-            # Collect counts per label
-            if label_config.multilabel:
-                assert label_config.separator
-                # Spark's split function uses a regexp so we
-                # need to escape special chars to be used as separators
-                if label_config.separator in SPECIAL_CHARACTERS:
-                    separator = f"\\{label_config.separator}"
-                else:
-                    separator = label_config.separator
-                label_counts_df = (
-                    original_labels.select(label_col)
-                    .withColumn(label_col, F.explode(F.split(F.col(label_col), separator)))
-                    .groupBy(label_col)
-                    .count()
-                )
-            else:  # Single-label classification
-                label_counts_df = original_labels.groupBy(label_col).count()
-
-            # TODO: Verify correctness here
-            label_counts_dict: Counter = Counter()
-            for label_count_row in label_counts_df.collect():
-                row_dict = label_count_row.asDict()
-                # Label value to count
-                label_counts_dict[row_dict[label_col]] = row_dict["count"]
-
-            self.label_properties[node_or_edge_type][VALUE_COUNTS] = (
-                self.label_properties.get(VALUE_COUNTS, Counter()) + label_counts_dict
-            )
-        else:
-            raise RuntimeError(f"Invalid task type: {label_config.task_type}")
-
-    def _create_split_files(
-        self,
+        type_output_prefix: str,
+        label_loader: DistLabelLoader,
+        element_type: str,
         input_df: DataFrame,
         label_column: str,
+        order_column: str,
         split_rates: Optional[SplitRates],
-        output_path: str,
+        mask_field_names: Optional[tuple[str, str, str]] = None,
         custom_split_file: Optional[CustomSplit] = None,
         seed: Optional[int] = None,
-        mask_field_names: Optional[tuple[str, str, str]] = None,
-    ) -> Dict:
+    ) -> dict[str, dict]:
         """
         Given an input dataframe and a list of split rates or a list of custom split files
         creates the split masks and writes them to S3 and returns the corresponding
@@ -1927,286 +1918,103 @@ class DistHeterogeneousGraphLoader(object):
 
         Parameters
         ----------
+        type_output_prefix: str
+            The output prefix for the element type.
+        label_loader: DistLabelLoader
+            The DistLabelLoader instance to use to create the masks.
+        element_type: str
+            The type name of the element (node/edge) for which we are creating the masks.
         input_df: DataFrame
             Input dataframe for which we will create split masks.
         label_column: str
             The name of the label column. If provided, the values in the column
             need to be not null for the data point to be included in one of the masks.
             If an empty string, all rows in the input_df are included in one of train/val/test sets.
+        order_column: str
+            The column we use to maintain order when creating masks.
         split_rates: Optional[SplitRates]
             A SplitRates object indicating the train/val/test split rates.
             If None, a default split rate of 0.9:0.05:0.05 is used.
         output_path: str
             The output path under which we write the masks.
+        mask_field_names: Optional[tuple[str, str, str]]
+            An optional tuple of field names to use for the split masks.
+            If not provided, the default field names "train_mask",
+            "val_mask", and "test_mask" are used.
         custom_split_file: Optional[CustomSplit]
             A CustomSplit object including path to the custom split files for
             training/validation/test.
         seed: int
             An optional random seed for reproducibility.
-        mask_field_names: Optional[tuple[str, str, str]]
-            An optional tuple of field names to use for the split masks.
-            If not provided, the default field names "train_mask",
-            "val_mask", and "test_mask" are used.
 
         Returns
         -------
-        The metadata dict elements for the train/test/val masks, to be added to the caller's
-        edge/node type metadata.
+        dict[str, dict]
+            The metadata dict elements for the train/test/val masks, to be added to the caller's
+            edge/node type metadata. In the case of random splits, a new entry for the labels
+            is included.
         """
-        # If the user did not provide a split rate we use a default
-        split_metadata = {}
-        if not custom_split_file:
-            mask_dfs = self._create_split_files_split_rates(
-                input_df, label_column, split_rates, seed, mask_field_names
-            )
-        else:
-            mask_dfs = self._create_split_files_custom_split(
-                input_df, custom_split_file, mask_field_names
-            )
 
-        def create_metadata_entry(path_list):
+        def create_metadata_entry(path_list: Sequence[str]):
             return {
                 "format": {"name": FORMAT_NAME, "delimiter": DELIMITER},
                 "data": path_list,
             }
 
-        if mask_field_names is not None:
-            mask_names = mask_field_names
-        else:
-            mask_names = ("train_mask", "val_mask", "test_mask")
+        element_metadata = {}
 
-        # Write each mask DF to disk with appropriate name
-        for mask_name, mask_df in zip(mask_names, mask_dfs):
-            out_path_list = self._write_df(
-                mask_df.select(F.col(mask_name).cast(ByteType()).alias(mask_name)),
-                f"{output_path}-{mask_name}",
+        if not mask_field_names:
+            mask_field_names = ["train_mask", "val_mask", "test_mask"]
+
+        if not custom_split_file:
+            combined_masks = label_loader.create_split_files_split_rates(
+                input_df, label_column, order_column, split_rates, seed
             )
-            split_metadata[mask_name] = create_metadata_entry(out_path_list)
+            # TODO: Only perform for classification tasks to avoid memory hit?
+            combined_masks_pandas = combined_masks.select(
+                [DATA_SPLIT_SET_MASK_COL, label_column]
+            ).toPandas()
 
-        return split_metadata
+            # Convert mask column of [x, x, x] 0/1 lists to 3 numpy 0-dim arrays
+            mask_array = np.stack(combined_masks_pandas[DATA_SPLIT_SET_MASK_COL].to_numpy())
+            train_mask = mask_array[:, 0]
+            val_mask = mask_array[:, 1]
+            test_mask = mask_array[:, 2]
 
-    def _create_split_files_split_rates(
-        self,
-        input_df_with_ids: DataFrame,
-        label_column: str,
-        split_rates: Optional[SplitRates],
-        seed: Optional[int],
-        mask_field_names: Optional[tuple[str, str, str]] = None,
-    ) -> tuple[DataFrame, DataFrame, DataFrame]:
-        """
-        Creates the train/val/test mask dataframe based on split rates.
+            for mask_name, mask_vals in zip(mask_field_names, [train_mask, val_mask, test_mask]):
+                mask_full_outpath = f"{type_output_prefix}-{label_column}-{mask_name}.parquet"
+                pq.write_table(
+                    pa.Table.from_arrays([mask_vals], names=[mask_name]),
+                    where=mask_full_outpath,
+                )
+                relative_mask_path = self._strip_common_prefix(mask_full_outpath)
+                element_metadata[mask_name] = create_metadata_entry([relative_mask_path])
 
-        Parameters
-        ----------
-        input_df_with_ids: DataFrame
-            Input dataframe for which we will create split masks.
-        label_column: str
-            The name of the label column. If provided, the values in the column
-            need to be not null for the data point to be included in one of the masks.
-            If an empty string, all rows in the input_df are included in one of train/val/test sets.
-        split_rates: Optional[SplitRates]
-            A SplitRates object indicating the train/val/test split rates.
-            If None, a default split rate of 0.8:0.1:0.1 is used.
-        seed: Optional[int]
-            An optional random seed for reproducibility.
-        mask_field_names: Optional[tuple[str, str, str]]
-            An optional tuple of field names to use for the split masks.
-            If not provided, the default field names "train_mask",
-            "val_mask", and "test_mask" are used.
+            # Write the labels from the same DF to ensure common order between masks and labels
+            labels_out_fullpath = f"{type_output_prefix}-label-{label_column}.parquet"
 
-        Returns
-        -------
-        tuple[DataFrame, DataFrame, DataFrame]
-            Train/val/test mask DataFrames.
-        """
-        if split_rates is None:
-            split_rates = SplitRates(train_rate=0.8, val_rate=0.1, test_rate=0.1)
-            logging.info(
-                "Split rate not provided for label column '%s', using split rates: %s",
-                label_column,
-                split_rates.tolist(),
+            pq.write_table(
+                pa.Table.from_pandas(
+                    df=combined_masks_pandas[[label_column]],
+                    columns=[label_column],
+                ),
+                where=labels_out_fullpath,
             )
+
+            relative_labels_path = self._strip_common_prefix(labels_out_fullpath)
+            element_metadata[label_column] = create_metadata_entry([relative_labels_path])
         else:
-            # TODO: add support for sums <= 1.0, useful for large-scale link prediction
-            if math.fsum(split_rates.tolist()) != 1.0:
-                raise RuntimeError(f"Provided split rates  do not sum to 1: {split_rates}")
+            train_mask_df, val_mask_df, test_mask_df = label_loader.create_split_files_custom_split(
+                input_df, custom_split_file, mask_field_names
+            )
+            for mask, mask_name in zip(  # type: ignore
+                [train_mask_df, val_mask_df, test_mask_df], mask_field_names
+            ):
+                relative_mask_path = f"node_data/{element_type}-{mask_name}.parquet"
+                file_list = self._write_df(mask, f"{self.output_prefix}/{relative_mask_path}")
+                element_metadata[mask_name] = create_metadata_entry(file_list)
 
-        split_list = split_rates.tolist()
-        logging.info(
-            "Creating split files for label column '%s' with split rates: %s",
-            label_column,
-            split_list,
-        )
-
-        rng = default_rng(seed=seed)
-
-        # We use multinomial sampling to create a one-hot
-        # vector indicating train/test/val membership
-        def multinomial_sample(label_col: str) -> Sequence[int]:
-            if label_col in {"", "None", "NaN", None}:
-                return [0, 0, 0]
-            return rng.multinomial(1, split_list).tolist()
-
-        group_col_name = "sample_boolean_mask"  # TODO: Ensure uniqueness of column?
-
-        # TODO: Use PandasUDF and check if it is faster than UDF
-        split_group = F.udf(multinomial_sample, ArrayType(IntegerType()))
-        # Convert label col to string and apply UDF
-        # to create one-hot vector indicating train/test/val membership
-        input_col = F.col(label_column).astype("string") if label_column else F.lit("dummy")
-        int_group_df = input_df_with_ids.select(
-            split_group(input_col).alias(group_col_name), NODE_MAPPING_INT
-        )
-
-        # We cache because we re-use this DF 3 times
-        int_group_df = int_group_df.orderBy(NODE_MAPPING_INT).cache()
-        # Use custom column names if requested
-        if mask_field_names:
-            mask_names = mask_field_names
-        else:
-            mask_names = ("train_mask", "val_mask", "test_mask")
-
-        train_mask_df = int_group_df.select(F.col(group_col_name)[0].alias(mask_names[0]))
-        val_mask_df = int_group_df.select(F.col(group_col_name)[1].alias(mask_names[1]))
-        test_mask_df = int_group_df.select(F.col(group_col_name)[2].alias(mask_names[2]))
-
-        return train_mask_df, val_mask_df, test_mask_df
-
-    def _create_split_files_custom_split(
-        self,
-        input_df: DataFrame,
-        custom_split_file: CustomSplit,
-        mask_field_names: Optional[tuple[str, str, str]] = None,
-    ) -> tuple[DataFrame, DataFrame, DataFrame]:
-        """
-        Creates the train/val/test mask dataframe based on custom split files.
-
-        Parameters
-        ----------
-        input_df: DataFrame
-            Input dataframe for which we will create split masks.
-        custom_split_file: CustomSplit
-            A CustomSplit object including path to the custom split files for
-            training/validation/test.
-        mask_type: str
-            The type of mask to create, value can be train, val or test.
-        mask_field_names: Optional[tuple[str, str, str]]
-            An optional tuple of field names to use for the split masks.
-            If not provided, the default field names "train_mask",
-            "val_mask", and "test_mask" are used.
-
-        Returns
-        -------
-        tuple[DataFrame, DataFrame, DataFrame]
-            Train/val/test mask dataframes.
-        """
-
-        # custom node/edge label
-        # create custom mask dataframe for one of the types: train, val, test
-        def process_custom_mask_df(
-            input_df: DataFrame, split_file: CustomSplit, mask_name: str, mask_type: str
-        ):
-            """
-            Creates the mask dataframe based on custom split files on one mask type.
-
-            Parameters
-            ----------
-            input_df: DataFrame
-                Input dataframe for which we will add integer mapping.
-            split_file: CustomSplit
-                A CustomSplit object including path to the custom split files for
-                training/validation/test.
-            mask_name: str
-                Mask field name for the mask type.
-            mask_type: str
-                The type of mask to create, value can be train, val or test.
-            """
-
-            def create_mapping(input_df):
-                """
-                Creates the integer mapping for order maintaining.
-
-                Parameters
-                ----------
-                input_df: DataFrame
-                    Input dataframe for which we will add integer mapping.
-                """
-                return_df = input_df.withColumn(
-                    CUSTOM_DATA_SPLIT_ORDER, monotonically_increasing_id()
-                )
-                return return_df
-
-            if mask_type == "train":
-                file_paths = split_file.train
-            elif mask_type == "val":
-                file_paths = split_file.valid
-            elif mask_type == "test":
-                file_paths = split_file.test
-            else:
-                raise ValueError("Unknown mask type")
-
-            # Custom data split should only be considered
-            # in cases with a limited number of labels.
-            if len(split_file.mask_columns) == 1:
-                # custom split on node original id
-                custom_mask_df = self.spark.read.parquet(
-                    *[os.path.join(self.input_prefix, file_path) for file_path in file_paths]
-                ).select(col(split_file.mask_columns[0]).alias(f"custom_{mask_type}_mask"))
-                input_df_id = create_mapping(input_df)
-                mask_df = input_df_id.join(
-                    custom_mask_df,
-                    input_df_id[NODE_MAPPING_STR] == custom_mask_df[f"custom_{mask_type}_mask"],
-                    "left_outer",
-                )
-                mask_df = mask_df.orderBy(CUSTOM_DATA_SPLIT_ORDER)
-                mask_df = mask_df.select(
-                    "*",
-                    when(mask_df[f"custom_{mask_type}_mask"].isNotNull(), 1)
-                    .otherwise(0)
-                    .alias(mask_name),
-                ).select(mask_name)
-            elif len(split_file.mask_columns) == 2:
-                # custom split on edge (srd, dst) original ids
-                custom_mask_df = self.spark.read.parquet(
-                    *[os.path.join(self.input_prefix, file_path) for file_path in file_paths]
-                ).select(
-                    col(split_file.mask_columns[0]).alias(f"custom_{mask_type}_mask_src"),
-                    col(split_file.mask_columns[1]).alias(f"custom_{mask_type}_mask_dst"),
-                )
-                input_df_id = create_mapping(input_df)
-                join_condition = (
-                    input_df_id["src_str_id"] == custom_mask_df[f"custom_{mask_type}_mask_src"]
-                ) & (input_df_id["dst_str_id"] == custom_mask_df[f"custom_{mask_type}_mask_dst"])
-                mask_df = input_df_id.join(custom_mask_df, join_condition, "left_outer")
-                mask_df = mask_df.orderBy(CUSTOM_DATA_SPLIT_ORDER)
-                mask_df = mask_df.select(
-                    "*",
-                    when(
-                        (mask_df[f"custom_{mask_type}_mask_src"].isNotNull())
-                        & (mask_df[f"custom_{mask_type}_mask_dst"].isNotNull()),
-                        1,
-                    )
-                    .otherwise(0)
-                    .alias(mask_name),
-                ).select(mask_name)
-            else:
-                raise ValueError(
-                    "The number of column should be only 1 or 2, got columns: "
-                    f"{split_file.mask_columns}"
-                )
-
-            return mask_df
-
-        if mask_field_names:
-            mask_names = mask_field_names
-        else:
-            mask_names = ("train_mask", "val_mask", "test_mask")
-        train_mask_df, val_mask_df, test_mask_df = (
-            process_custom_mask_df(input_df, custom_split_file, mask_names[0], "train"),
-            process_custom_mask_df(input_df, custom_split_file, mask_names[1], "val"),
-            process_custom_mask_df(input_df, custom_split_file, mask_names[2], "test"),
-        )
-        return train_mask_df, val_mask_df, test_mask_df
+        return element_metadata
 
     def load(self) -> ProcessedGraphRepresentation:
         """Load graph and return JSON representations."""

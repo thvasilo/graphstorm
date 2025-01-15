@@ -312,6 +312,7 @@ class DistributedExecutor:
         self.spark.stop()
 
         all_match = verify_metadata_match(graph_meta_dict)
+        print(f"{self.output_prefix=}")
         repartitioner = ParquetRepartitioner(
             self.output_prefix,
             self.filesystem_type,
@@ -666,7 +667,7 @@ def main():
                 )
             except botocore.exceptions.ClientError as e:  # type: ignore
                 raise RuntimeError(
-                    "Unable to download config file at"
+                    "Unable to download config file at "
                     f"s3://{input_bucket}/{input_s3_prefix}/"
                     f"{gsprocessing_args.config_filename}"
                 ) from e
