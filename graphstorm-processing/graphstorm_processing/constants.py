@@ -97,3 +97,5 @@ SPARK_HADOOP_VERSIONS = {
 
 ########## Precomputed transformations ################
 TRANSFORMATIONS_FILENAME = "precomputed_transformations.json"
+DATA_SPLIT_SET_MASK_COL = "GSP_sample_boolean_mask"
+COLUMN_ORDER_FLAG = "GSP_label_property_order_id"

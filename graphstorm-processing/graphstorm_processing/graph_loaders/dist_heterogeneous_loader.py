@@ -23,8 +23,11 @@ from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from time import perf_counter
-from typing import Any, Dict, Optional, Set, Tuple
+from typing import Any, Dict, Optional, Set, Tuple, Union
 
+import pandas as pd
+from pandas import DataFrame as PDDataFrame
+import numpy as np
 from pyspark import RDD
 from pyspark.sql import Row, SparkSession, DataFrame, functions as F
 from pyspark.sql.types import (
@@ -40,6 +43,8 @@ from pyspark.sql.functions import col, when, monotonically_increasing_id
 from numpy.random import default_rng
 
 from graphstorm_processing.constants import (
+    COLUMN_ORDER_FLAG,
+    DATA_SPLIT_SET_MASK_COL,
     MIN_VALUE,
     MAX_VALUE,
     VALUE_COUNTS,
@@ -478,7 +483,9 @@ class DistHeterogeneousGraphLoader(object):
 
         return self.graph_info
 
-    def _replace_special_chars_in_cols(self, input_df: DataFrame) -> DataFrame:
+    def _replace_special_chars_in_cols(
+        self, input_df: Union[DataFrame, PDDataFrame]
+    ) -> Union[DataFrame, PDDataFrame]:
         """Replace characters from column names that are not allowed in Parquet column names.
 
         As a side-effect will store all the column name substitutions in
@@ -508,7 +515,7 @@ class DistHeterogeneousGraphLoader(object):
 
     def _write_df(
         self,
-        input_df: DataFrame,
+        input_df: Union[DataFrame, PDDataFrame],
         full_output_path: str,
         out_format: str = "parquet",
         num_files: Optional[int] = None,
@@ -551,16 +558,25 @@ class DistHeterogeneousGraphLoader(object):
             output_bucket = ""
             output_prefix = full_output_path
 
-        if num_files and num_files != -1:
-            input_df = input_df.coalesce(num_files)
-        elif self.num_output_files:
-            input_df = input_df.coalesce(self.num_output_files)
+        if isinstance(input_df, DataFrame):
+            if num_files and num_files != -1:
+                input_df = input_df.coalesce(num_files)
+            elif self.num_output_files:
+                input_df = input_df.coalesce(self.num_output_files)
 
         if out_format == "parquet":
             # Write to parquet
             input_df = self._replace_special_chars_in_cols(input_df)
-            input_df.write.mode("overwrite").parquet(os.path.join(full_output_path, "parquet"))
+
             prefix_with_format = os.path.join(output_prefix, "parquet")
+            if isinstance(input_df, DataFrame):
+                input_df.write.parquet(prefix_with_format)
+            else:
+                input_df.to_parquet(
+                    os.path.join(prefix_with_format, "part-00000.parquet"),
+                    engine="pyarrow",
+                    index=False,
+                )
         elif out_format == "csv":
             # TODO: Upstream perhaps it's a good idea for all transformers to guarantee
             # same output type, e.g. list of floats
@@ -578,9 +594,12 @@ class DistHeterogeneousGraphLoader(object):
                     # Single column, but could be a multi-valued vector
                     return f"{row_vals[0]}"
 
-            input_rdd: RDD = input_df.rdd.map(csv_row)
-            input_rdd.saveAsTextFile(os.path.join(full_output_path, "csv"))
             prefix_with_format = os.path.join(output_prefix, "csv")
+            if isinstance(input_df, DataFrame):
+                input_rdd: RDD = input_df.rdd.map(csv_row)
+                input_rdd.saveAsTextFile(os.path.join(full_output_path, "csv"))
+            else:
+                input_df.to_csv(os.path.join(prefix_with_format, "part-00000.csv"), index=False)
         else:
             raise NotImplementedError(f"Unsupported output format: {out_format}")
 
@@ -791,6 +810,7 @@ class DistHeterogeneousGraphLoader(object):
         incoming_node_ids, join_col = spark_utils.safe_rename_column(
             edges_df.select(node_col).distinct().dropna(), node_col, join_col
         )
+        assert isinstance(incoming_node_ids, DataFrame)
         if self.enable_assertions:
             null_counts = (
                 edges_df.select(node_col)
@@ -1224,7 +1244,7 @@ class DistHeterogeneousGraphLoader(object):
             self.graph_info["label_map"] = node_label_loader.label_map
 
             label_output_path = (
-                f"{self.output_prefix}/node_data/" f"{node_type}-label-{label_conf.label_column}"
+                f"{self.output_prefix}/node_data/{node_type}-label-{label_conf.label_column}"
             )
 
             path_list = self._write_df(transformed_label, label_output_path)
@@ -1822,7 +1842,7 @@ class DistHeterogeneousGraphLoader(object):
             else:
                 custom_split_filenames = None
             label_split_dicts = self._create_split_files(
-                edges_df,
+                transformed_label,
                 label_conf.label_column,
                 split_rates,
                 split_masks_output_prefix,
@@ -1908,7 +1928,7 @@ class DistHeterogeneousGraphLoader(object):
 
     def _create_split_files(
         self,
-        input_df: DataFrame,
+        transformed_label_with_id: DataFrame,
         label_column: str,
         split_rates: Optional[SplitRates],
         output_path: str,
@@ -1923,8 +1943,10 @@ class DistHeterogeneousGraphLoader(object):
 
         Parameters
         ----------
-        input_df: DataFrame
-            Input dataframe for which we will create split masks.
+        transformed_label_with_id: DataFrame
+            Input dataframe for which we will create split masks. Contains the transformed
+            label value and a column with the value of ``COLUMN_ORDER_FLAG`` that we can
+            use to maintain order.
         label_column: str
             The name of the label column. If provided, the values in the column
             need to be not null for the data point to be included in one of the masks.
@@ -1949,16 +1971,10 @@ class DistHeterogeneousGraphLoader(object):
         The metadata dict elements for the train/test/val masks, to be added to the caller's
         edge/node type metadata.
         """
-        # If the user did not provide a split rate we use a default
-        split_metadata = {}
-        if not custom_split_file:
-            mask_dfs = self._create_split_files_split_rates(
-                input_df, label_column, split_rates, seed, mask_field_names
-            )
+        if mask_field_names is not None:
+            mask_names = mask_field_names
         else:
-            mask_dfs = self._create_split_files_custom_split(
-                input_df, custom_split_file, mask_field_names
-            )
+            mask_names = ("train_mask", "val_mask", "test_mask")
 
         def create_metadata_entry(path_list):
             return {
@@ -1966,15 +1982,34 @@ class DistHeterogeneousGraphLoader(object):
                 "data": path_list,
             }
 
-        if mask_field_names is not None:
-            mask_names = mask_field_names
+
+        # If the user did not provide a split rate we use a default
+        split_metadata = {}
+        if not custom_split_file:
+            mask_dfs = self._create_split_files_split_rates(
+                transformed_label_with_id, label_column, split_rates, seed, mask_names
+            )
+            label_pd_df: PDDataFrame = mask_dfs[3]
+            mask_dfs = mask_dfs[:3]
+            # Write the updated labels to storage. The metadata will overwrite
+            # any previously written label entry
+            label_outpath = f"{output_path}-label-{label_column}"
+            label_paths = self._write_df(label_pd_df, label_outpath)
+            split_metadata[label_column] = create_metadata_entry(label_paths)
         else:
-            mask_names = ("train_mask", "val_mask", "test_mask")
+            mask_dfs = self._create_split_files_custom_split(
+                transformed_label_with_id, custom_split_file, mask_names
+            )
+            mask_dfs = list(mask_dfs)
+            for idx, mask_name in enumerate(mask_names):
+                mask_dfs[idx] = mask_dfs[idx].select(
+                    F.col(mask_name).cast(ByteType()).alias(mask_name))
+
 
         # Write each mask DF to disk with appropriate name
         for mask_name, mask_df in zip(mask_names, mask_dfs):
             out_path_list = self._write_df(
-                mask_df.select(F.col(mask_name).cast(ByteType()).alias(mask_name)),
+                mask_df,
                 f"{output_path}-{mask_name}",
             )
             split_metadata[mask_name] = create_metadata_entry(out_path_list)
@@ -1983,19 +2018,21 @@ class DistHeterogeneousGraphLoader(object):
 
     def _create_split_files_split_rates(
         self,
-        input_df: DataFrame,
+        transformed_label_with_id: DataFrame,
         label_column: str,
         split_rates: Optional[SplitRates],
         seed: Optional[int],
         mask_field_names: Optional[tuple[str, str, str]] = None,
-    ) -> tuple[DataFrame, DataFrame, DataFrame]:
+    ) -> tuple[PDDataFrame, PDDataFrame, PDDataFrame, PDDataFrame]:
         """
         Creates the train/val/test mask dataframe based on split rates.
 
         Parameters
         ----------
         input_df: DataFrame
-            Input dataframe for which we will create split masks.
+            Input dataframe for which we will create split masks. Contains the transformed
+            label value and a column with the value of ``COLUMN_ORDER_FLAG`` that we can
+            use to maintain order.
         label_column: str
             The name of the label column. If provided, the values in the column
             need to be not null for the data point to be included in one of the masks.
@@ -2043,28 +2080,51 @@ class DistHeterogeneousGraphLoader(object):
                 return [0, 0, 0]
             return rng.multinomial(1, split_list).tolist()
 
-        group_col_name = "sample_boolean_mask"  # TODO: Ensure uniqueness of column?
+        group_col_name = DATA_SPLIT_SET_MASK_COL  # TODO: Ensure uniqueness of column?
 
         # TODO: Use PandasUDF and check if it is faster than UDF
         split_group = F.udf(multinomial_sample, ArrayType(IntegerType()))
         # Convert label col to string and apply UDF
         # to create one-hot vector indicating train/test/val membership
         input_col = F.col(label_column).astype("string") if label_column else F.lit("dummy")
-        int_group_df = input_df.select(split_group(input_col).alias(group_col_name))
+        masks_and_label = transformed_label_with_id.select(
+            label_column,
+            split_group(input_col).alias(group_col_name),
+            COLUMN_ORDER_FLAG,
+        ).orderBy(COLUMN_ORDER_FLAG)
 
         # We cache because we re-use this DF 3 times
-        int_group_df.cache()
+        masks_and_label.cache()
+
+        print(f"{masks_and_label.columns=}")
+        masks_and_label_pd = masks_and_label.toPandas()
+        print(f"{masks_and_label_pd.columns=}")
+
+        # TODO: Only perform for classification tasks to avoid memory hit?
+        combined_masks_pandas = masks_and_label_pd.sort_values(COLUMN_ORDER_FLAG)
+
         # Use custom column names if requested
         if mask_field_names:
             mask_names = mask_field_names
         else:
             mask_names = ("train_mask", "val_mask", "test_mask")
 
-        train_mask_df = int_group_df.select(F.col(group_col_name)[0].alias(mask_names[0]))
-        val_mask_df = int_group_df.select(F.col(group_col_name)[1].alias(mask_names[1]))
-        test_mask_df = int_group_df.select(F.col(group_col_name)[2].alias(mask_names[2]))
+        # Convert mask column of [x, x, x] 0/1 lists to 3 Pandas DFs
+        mask_array: np.ndarray = np.stack(
+            combined_masks_pandas[DATA_SPLIT_SET_MASK_COL].to_numpy()
+        )
+        train_mask_pd_df = pd.DataFrame.from_dict({mask_names[0]: mask_array[:, 0].astype(np.int8)})
+        val_mask_pd_df = pd.DataFrame.from_dict({mask_names[1]: mask_array[:, 1].astype(np.int8)})
+        test_mask_pd_df = pd.DataFrame.from_dict({mask_names[2]: mask_array[:, 2].astype(np.int8)})
 
-        return train_mask_df, val_mask_df, test_mask_df
+        return_tuple = (
+            train_mask_pd_df,
+            val_mask_pd_df,
+            test_mask_pd_df,
+            combined_masks_pandas[[label_column]],
+        )
+
+        return return_tuple
 
     def _create_split_files_custom_split(
         self,

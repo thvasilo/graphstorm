@@ -11,13 +11,15 @@ https://github.com/aws/sagemaker-spark-container/blob/4ef476fd535040f245def3d38c
 
 import logging
 import uuid
-from typing import Optional, Tuple, Sequence
+from typing import Optional, Sequence, Tuple, Union
 
 import psutil
 
 import pyspark
+from pandas import DataFrame as PDDataFrame
 from pyspark.sql import SparkSession, DataFrame, functions as F
 from pyspark.util import VersionUtils
+
 from graphstorm_processing import constants
 from graphstorm_processing.constants import ExecutionEnv, FilesystemType, SPARK_HADOOP_VERSIONS
 
@@ -180,8 +182,8 @@ def _configure_spark_env_memory(
 
 
 def safe_rename_column(
-    dataframe: DataFrame, old_colum_name: str, new_column_name: str
-) -> Tuple[DataFrame, str]:
+    dataframe: Union[DataFrame, PDDataFrame], old_colum_name: str, new_column_name: str
+) -> Tuple[Union[DataFrame, PDDataFrame], str]:
     """Safely rename a column in a dataframe.
 
     If the requested column to be renamed does not exist will log a warning.
@@ -214,7 +216,10 @@ def safe_rename_column(
             new_column_name = new_column_name + suffix
         # Rename column in dataframe.
         logging.debug("Renaming column %s to %s.", old_colum_name, new_column_name)
-        dataframe = dataframe.withColumnRenamed(old_colum_name, new_column_name)
+        if isinstance(dataframe, PDDataFrame):
+            dataframe = dataframe.rename(columns={old_colum_name: new_column_name})
+        else:
+            dataframe = dataframe.withColumnRenamed(old_colum_name, new_column_name)
     else:
         logging.warning("Column %s not found in dataframe. Skipping renaming.", old_colum_name)
     return dataframe, new_column_name

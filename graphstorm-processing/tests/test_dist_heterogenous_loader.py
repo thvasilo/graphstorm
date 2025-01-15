@@ -14,41 +14,44 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
-from typing import Any, Dict, Optional
 import json
 import math
 import os
 import shutil
 import tempfile
+from typing import Any, Dict, Optional
 
+import pandas as pd
 from numpy.testing import assert_allclose
+from pandas.testing import assert_frame_equal
 from pyspark.sql import SparkSession, DataFrame
 import pyspark.sql.functions as F
 import pyarrow.parquet as pq
 import pytest
 
-from graphstorm_processing.graph_loaders.dist_heterogeneous_loader import (
-    DistHeterogeneousGraphLoader,
-    HeterogeneousLoaderConfig,
-    NODE_MAPPING_INT,
-    NODE_MAPPING_STR,
-)
-from graphstorm_processing.data_transformations.dist_label_loader import SplitRates
-from graphstorm_processing.config.label_config_base import (
-    NodeLabelConfig,
-    EdgeLabelConfig,
-)
 from graphstorm_processing.config.config_parser import (
     create_config_objects,
     EdgeConfig,
 )
 from graphstorm_processing.config.config_conversion import GConstructConfigConverter
+from graphstorm_processing.config.label_config_base import (
+    EdgeLabelConfig,
+    LabelConfig,
+    NodeLabelConfig,
+)
 from graphstorm_processing.constants import (
     COLUMN_NAME,
     MIN_VALUE,
     MAX_VALUE,
     VALUE_COUNTS,
     TRANSFORMATIONS_FILENAME,
+)
+from graphstorm_processing.data_transformations.dist_label_loader import DistLabelLoader, SplitRates
+from graphstorm_processing.graph_loaders.dist_heterogeneous_loader import (
+    DistHeterogeneousGraphLoader,
+    HeterogeneousLoaderConfig,
+    NODE_MAPPING_INT,
+    NODE_MAPPING_STR,
 )
 
 pytestmark = pytest.mark.usefixtures("spark")
@@ -1248,3 +1251,141 @@ def test_edge_custom_label_multitask(spark, dghl_loader: DistHeterogeneousGraphL
         lp_mask_names,
         3000,
     )
+
+
+def check_mask_nan_distribution(
+    df: pd.DataFrame, label_column: str, mask_name: str
+) -> tuple[bool, str]:
+    """
+    Check distribution of mask values (0/1) for NaN labels in a specific mask.
+
+    Args:
+        df: DataFrame containing labels and masks
+        label_column: Name of the label column
+        mask_name: Name of the mask column to check
+
+    Returns:
+        tuple: (has_error, error_message)
+    """
+    nan_labels = df[label_column].isna()
+    mask_values = df[mask_name]
+
+    # Count distribution of mask values for NaN labels
+    nan_dist = mask_values[nan_labels].value_counts().sort_index()
+
+    if 1 in nan_dist:
+        return (
+            True,
+            f"Found {nan_dist[1]} NaN labels with {mask_name}=1 "
+            f"(distribution of {mask_name} values for NaN labels: {nan_dist.to_dict()})",
+        )
+    return (False, "")
+
+
+def test_dist_label_order_partitioned(
+    spark: SparkSession, check_df_schema, dghl_loader: DistHeterogeneousGraphLoader
+):
+    """Test that label and mask order is maintained after label processing"""
+    label_col = "label_vals"
+    id_col = NODE_MAPPING_INT
+    classification_config = {
+        "column": label_col,
+        "type": "classification",
+        "split_rate": {"train": 0.8, "val": 0.1, "test": 0.1},
+    }
+
+    # Create a Pandas DF with a label column with 10k "zero", 10k "one", 10k None rows
+    num_datapoints = 10**4
+    ids = list(range(3 * num_datapoints))
+    data_zeros = ["zero" for _ in range(num_datapoints)]
+    data_ones = ["one" for _ in range(num_datapoints)]
+    data_nan = [None for _ in range(num_datapoints)]
+    data = data_zeros + data_ones + data_nan
+    pandas_input = pd.DataFrame.from_dict({label_col: data})
+    # We shuffle the rows so that "zero", "one" and None values are mixed and not continuous
+    pandas_shuffled = pandas_input.sample(frac=1, random_state=42).reset_index(drop=True)
+    # Assign a sequential ID to the shuffled labels
+    pandas_shuffled[id_col] = ids
+    names_df = spark.createDataFrame(pandas_shuffled)
+
+    # Create an order for the DF, then consistently shuffle it to multiple partitions
+    # TODO: Is this deterministic? Otherwise can add a random col
+    # and use as shuffle key
+    names_df_repart = names_df.repartition(64)
+
+    assert names_df_repart.rdd.getNumPartitions() == 64
+
+    # Convert the partitioned/shuffled DF to pandas
+    names_df_repart_pd = names_df_repart.toPandas()
+
+    # Apply transformation in Spark
+    label_transformer = DistLabelLoader(LabelConfig(classification_config), spark)
+    transformed_labels_with_ids = label_transformer.process_label(names_df_repart)
+    check_df_schema(transformed_labels_with_ids)
+
+    label_map = label_transformer.label_map
+    assert set(label_map.keys()) == {"zero", "one"}
+
+    # Apply transformation in Pandas to check against Spark
+    expected_transformed_pd = names_df_repart_pd.replace(
+        {
+            "zero": label_map["zero"],
+            "one": label_map["one"],
+        }
+    )
+
+    # Now let's test the mask transformation
+    mask_names = ("train", "val", "test")
+    split_rates = SplitRates(train_rate=0.8, val_rate=0.1, test_rate=0.1)
+
+    mask_dfs = dghl_loader._create_split_files_split_rates(
+        transformed_labels_with_ids,
+        label_col,
+        split_rates,
+        seed=42,
+    )
+    label_pd_df: pd.DataFrame = mask_dfs[3]
+    mask_dfs = mask_dfs[:3]
+
+    # Extract mask values from combined_df
+    train_mask, val_mask, test_mask = mask_dfs
+
+    masks_and_names = zip([train_mask, val_mask, test_mask], mask_names)
+
+    # Expect the label values to be the same, in the same order
+    assert_frame_equal(
+        label_pd_df[[label_col]],
+        expected_transformed_pd[[label_col]],
+        check_dtype=False,
+    )
+
+    # # Redundant, but let's check the values again after sorting by ID column
+    # assert_frame_equal(
+    #     label_pd_df.sort_values(id_col).loc[:, [label_col]],
+    #     expected_transformed_pd.sort_values(id_col).loc[:, [label_col]],
+    #     check_dtype=False,
+    # )
+
+    # Add mask values to the pandas DFs as individual columns
+    for mask, mask_name in masks_and_names:
+        label_pd_df[f"{mask_name}_mask"] = mask
+
+    # Check every mask value against the label values, and report errors
+    # if there exists a mask that has value 1 in a location where the label is NaN
+    errors = []
+    label_values = label_pd_df.loc[:, [label_col]]
+    for mask_name, mask_values in masks_and_names:
+        print(f"Checking {mask_name} mask")
+        has_error, error_msg = check_mask_nan_distribution(label_values, label_col, mask_values)
+        if has_error:
+            errors.append(error_msg)
+
+    # Raise error if any issues were found, and print groupby stats
+    if errors:
+        # Perform the groupby operation
+        print("Grouping label values by mask values")
+        grouped_values = label_pd_df.groupby([label_col], dropna=False).agg(
+            {i: "value_counts" for i in ["train_mask", "val_mask", "test_mask"]}
+        )
+        print(grouped_values)
+        raise ValueError("\n".join(errors))

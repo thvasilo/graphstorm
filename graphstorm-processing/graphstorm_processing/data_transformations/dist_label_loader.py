@@ -21,6 +21,9 @@ from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.types import FloatType
 
 from graphstorm_processing.config.label_config_base import LabelConfig
+from graphstorm_processing.constants import (
+    COLUMN_ORDER_FLAG,
+)
 from graphstorm_processing.data_transformations.dist_transformations import (
     DistMultiLabelTransformation,
     DistSingleLabelTransformation,
@@ -144,9 +147,13 @@ class DistLabelLoader:
                     [self.label_config.label_column], self.spark
                 )
 
-            transformed_label = label_transformer.apply(input_df).select(self.label_column)
+            transformed_label_with_order = (
+                label_transformer
+                    .apply(input_df)
+                    .select(self.label_column, COLUMN_ORDER_FLAG)
+            )
             self.label_map = label_transformer.value_map
-            return transformed_label
+            return transformed_label_with_order
         elif self.label_config.task_type == "regression":
             if not isinstance(label_type, FloatType):
                 raise RuntimeError(
