@@ -38,12 +38,18 @@ from pyspark.sql.types import (
 
 
 from graphstorm_processing.constants import (
+    COLUMN_NAME,
     DATA_SPLIT_SET_MASK_COL,
     HUGGINGFACE_TRANFORM,
     HUGGINGFACE_TOKENIZE,
+    FilesystemType,
+    MIN_VALUE,
+    MAX_VALUE,
     NODE_MAPPING_INT,
     NODE_MAPPING_STR,
+    SPECIAL_CHARACTERS,
     TRANSFORMATIONS_FILENAME,
+    VALUE_COUNTS,
 )
 from graphstorm_processing.config.config_parser import (
     EdgeConfig,
@@ -167,15 +173,15 @@ class DistHeterogeneousGraphLoader(object):
 
         # TODO: Pass as an argument?
         if loader_config.input_prefix.startswith("s3://"):
-            self.filesystem_type = "s3"
+            self.filesystem_type = FilesystemType.S3
         else:
             assert os.path.isabs(loader_config.input_prefix), "We expect an absolute path"
-            self.filesystem_type = "local"
+            self.filesystem_type = FilesystemType.LOCAL
 
         self.spark: SparkSession = spark
         self.add_reverse_edges = loader_config.add_reverse_edges
         # Remove trailing slash in s3 paths
-        if self.filesystem_type == "s3":
+        if self.filesystem_type == FilesystemType.S3:
             self.input_prefix = s3_utils.s3_path_remove_trailing(loader_config.input_prefix)
             self.output_prefix = s3_utils.s3_path_remove_trailing(loader_config.output_prefix)
         else:
@@ -541,7 +547,7 @@ class DistHeterogeneousGraphLoader(object):
         NotImplementedError
             If an output format other than "csv" or "parquet" is requested.
         """
-        if self.filesystem_type == "s3":
+        if self.filesystem_type == FilesystemType.S3:
             output_bucket, output_prefix = s3_utils.extract_bucket_and_key(full_output_path)
         else:
             output_bucket = ""
@@ -585,12 +591,12 @@ class DistHeterogeneousGraphLoader(object):
         # So we first get the full paths, then the common prefix,
         # then strip the common prefix from the full paths,
         # to leave paths relative to where the metadata will be written.
-        if self.filesystem_type == "s3":
+        if self.filesystem_type == FilesystemType.S3:
             object_key_list = s3_utils.list_s3_objects(output_bucket, prefix_with_format)
         else:
-            object_key_list = [
+            object_key_list = sorted([
                 os.path.join(prefix_with_format, f) for f in os.listdir(prefix_with_format)
-            ]
+            ])
 
         assert (
             object_key_list
@@ -624,7 +630,7 @@ class DistHeterogeneousGraphLoader(object):
         str
             The path without the common prefix.
         """
-        if self.filesystem_type == "s3":
+        if self.filesystem_type == FilesystemType.S3:
             # Get the S3 key prefix without the bucket
             common_prefix = self.output_prefix.split("/", maxsplit=3)[3]
         else:
@@ -1254,8 +1260,8 @@ class DistHeterogeneousGraphLoader(object):
 
             self.graph_info["label_map"] = node_label_loader.label_map
 
-            node_label_loader._update_label_properties(
-                self.label_properties, node_type, nodes_df_with_ids, label_conf
+            self._update_label_properties(
+                node_type, nodes_df_with_ids, label_conf
             )
 
             logging.info(
@@ -1802,8 +1808,8 @@ class DistHeterogeneousGraphLoader(object):
         label_metadata_dicts = {}
 
         for label_conf in label_configs:
+            edge_label_loader = DistLabelLoader(label_conf, self.spark, self.input_prefix)
             if label_conf.task_type != "link_prediction":
-                edge_label_loader = DistLabelLoader(label_conf, self.spark)
                 self.graph_info["task_type"] = (
                     "edge_class" if label_conf.task_type == "classification" else "edge_regression"
                 )
@@ -1835,8 +1841,8 @@ class DistHeterogeneousGraphLoader(object):
                 }
                 label_metadata_dicts[label_conf.label_column] = label_metadata_dict
 
-                edge_label_loader._update_label_properties(
-                    self.label_properties, edge_type, edges_df_int_ids, label_conf
+                self._update_label_properties(
+                    edge_type, edges_df_int_ids, label_conf
                 )
             else:
                 self.graph_info["task_type"] = "link_prediction"
@@ -1844,6 +1850,7 @@ class DistHeterogeneousGraphLoader(object):
                     "Skipping processing label for '%s' because task is link prediction",
                     rel_type_prefix,
                 )
+                transformed_label = edges_df_int_ids
 
             edge_type_output_prefix = os.path.join(
                 self.output_prefix, f"edge_data/{edge_type.replace(':', '_')}"
@@ -1898,12 +1905,85 @@ class DistHeterogeneousGraphLoader(object):
 
         return label_metadata_dicts
 
+    def _update_label_properties(
+        self,
+        node_or_edge_type: str,
+        original_labels: DataFrame,
+        label_config: LabelConfig,
+    ) -> None:
+        """Extracts and stores statistics about labels.
+
+        For a given node or edge type, label configuration and the original
+        (non-transformed) label DataFrame, extract some statistics
+        and store them in `self.label_properties` to be written to
+        storage later. The statistics can be used by downstream tasks.
+
+        Parameters
+        ----------
+        node_or_edge_type : str
+            The node or edge type name for which the label information is being updated.
+        original_labels : DataFrame
+            The original (non-transformed) label DataFrame.
+        label_config : LabelConfig
+            The label configuration object.
+
+        Raises
+        ------
+        RuntimeError
+            In case an invalid task type name is specified in the label config.
+        """
+        label_col = label_config.label_column
+        if node_or_edge_type not in self.label_properties:
+            self.label_properties[node_or_edge_type] = Counter()
+        # TODO: Something wrong with the assignment here? Investigate
+        self.label_properties[node_or_edge_type][COLUMN_NAME] = label_col
+
+        if label_config.task_type == "regression":
+            label_min = original_labels.agg(F.min(label_col).alias("min")).collect()[0]["min"]
+            label_max = original_labels.agg(F.max(label_col).alias("max")).collect()[0]["max"]
+
+            current_min = self.label_properties[node_or_edge_type].get(MIN_VALUE, float("inf"))
+            current_max = self.label_properties[node_or_edge_type].get(MAX_VALUE, float("-inf"))
+            self.label_properties[node_or_edge_type][MIN_VALUE] = min(current_min, label_min)
+            self.label_properties[node_or_edge_type][MAX_VALUE] = max(current_max, label_max)
+        elif label_config.task_type == "classification":
+            # Collect counts per label
+            if label_config.multilabel:
+                assert label_config.separator
+                # Spark's split function uses a regexp so we
+                # need to escape special chars to be used as separators
+                if label_config.separator in SPECIAL_CHARACTERS:
+                    separator = f"\\{label_config.separator}"
+                else:
+                    separator = label_config.separator
+                label_counts_df = (
+                    original_labels.select(label_col)
+                    .withColumn(label_col, F.explode(F.split(F.col(label_col), separator)))
+                    .groupBy(label_col)
+                    .count()
+                )
+            else:  # Single-label classification
+                label_counts_df = original_labels.groupBy(label_col).count()
+
+            # TODO: Verify correctness here
+            label_counts_dict: Counter = Counter()
+            for label_count_row in label_counts_df.collect():
+                row_dict = label_count_row.asDict()
+                # Label value to count
+                label_counts_dict[row_dict[label_col]] = row_dict["count"]
+
+            self.label_properties[node_or_edge_type][VALUE_COUNTS] = (
+                self.label_properties.get(VALUE_COUNTS, Counter()) + label_counts_dict
+            )
+        else:
+            raise RuntimeError(f"Invalid task type: {label_config.task_type}")
+
     def create_mask_files(
         self,
         type_output_prefix: str,
         label_loader: DistLabelLoader,
         element_type: str,
-        input_df: DataFrame,
+        input_df_with_order_ids: DataFrame,
         label_column: str,
         order_column: str,
         split_rates: Optional[SplitRates],
@@ -1961,51 +2041,63 @@ class DistHeterogeneousGraphLoader(object):
                 "data": path_list,
             }
 
+        def write_single_parquet(pa_table: pa.Table, out_path: str):
+            """Writes a single PyArrow Table to Parquet and returns the metadata entry."""
+            if self.filesystem_type == FilesystemType.LOCAL:
+                os.makedirs(os.path.dirname(out_path), exist_ok=True)
+            else:
+                print(f"FS type was {self.filesystem_type=}")
+            pq.write_table(
+                pa_table,
+                where=out_path,
+            )
+            return create_metadata_entry([self._strip_common_prefix(out_path)])
+
         element_metadata = {}
 
         if not mask_field_names:
-            mask_field_names = ["train_mask", "val_mask", "test_mask"]
+            mask_field_names = ("train_mask", "val_mask", "test_mask")
+        assert mask_field_names
 
         if not custom_split_file:
             combined_masks = label_loader.create_split_files_split_rates(
-                input_df, label_column, order_column, split_rates, seed
+                input_df_with_order_ids, label_column, order_column, split_rates, seed
             )
             # TODO: Only perform for classification tasks to avoid memory hit?
-            combined_masks_pandas = combined_masks.select(
-                [DATA_SPLIT_SET_MASK_COL, label_column]
-            ).toPandas()
+            if label_column:
+                combined_masks_pandas = combined_masks.select(
+                    [DATA_SPLIT_SET_MASK_COL, label_column]
+                ).toPandas()
+                # Write the labels from the same DF to ensure common order between masks and labels
+                # element_metadata[label_column] will then overwrite the entry in the type's meta entry
+                labels_out_fullpath = f"{type_output_prefix}-label-{label_column}.parquet"
+                element_metadata[label_column] = write_single_parquet(
+                    pa.Table.from_arrays(
+                        [combined_masks_pandas[label_column]], names=[label_column]
+                    ),
+                    labels_out_fullpath,
+                )
+            else:
+                # Link prediction case, we have no label column
+                combined_masks_pandas = combined_masks.select([DATA_SPLIT_SET_MASK_COL]).toPandas()
 
             # Convert mask column of [x, x, x] 0/1 lists to 3 numpy 0-dim arrays
-            mask_array = np.stack(combined_masks_pandas[DATA_SPLIT_SET_MASK_COL].to_numpy())
-            train_mask = mask_array[:, 0]
-            val_mask = mask_array[:, 1]
-            test_mask = mask_array[:, 2]
+            mask_array: np.ndarray = np.stack(
+                combined_masks_pandas[DATA_SPLIT_SET_MASK_COL].to_numpy()
+            )
+            train_mask = mask_array[:, 0].astype(np.int8)
+            val_mask = mask_array[:, 1].astype(np.int8)
+            test_mask = mask_array[:, 2].astype(np.int8)
 
             for mask_name, mask_vals in zip(mask_field_names, [train_mask, val_mask, test_mask]):
                 mask_full_outpath = f"{type_output_prefix}-{label_column}-{mask_name}.parquet"
-                pq.write_table(
+                element_metadata[mask_name] = write_single_parquet(
                     pa.Table.from_arrays([mask_vals], names=[mask_name]),
-                    where=mask_full_outpath,
+                    mask_full_outpath,
                 )
-                relative_mask_path = self._strip_common_prefix(mask_full_outpath)
-                element_metadata[mask_name] = create_metadata_entry([relative_mask_path])
-
-            # Write the labels from the same DF to ensure common order between masks and labels
-            labels_out_fullpath = f"{type_output_prefix}-label-{label_column}.parquet"
-
-            pq.write_table(
-                pa.Table.from_pandas(
-                    df=combined_masks_pandas[[label_column]],
-                    columns=[label_column],
-                ),
-                where=labels_out_fullpath,
-            )
-
-            relative_labels_path = self._strip_common_prefix(labels_out_fullpath)
-            element_metadata[label_column] = create_metadata_entry([relative_labels_path])
         else:
             train_mask_df, val_mask_df, test_mask_df = label_loader.create_split_files_custom_split(
-                input_df, custom_split_file, mask_field_names
+                input_df_with_order_ids, custom_split_file, mask_field_names
             )
             for mask, mask_name in zip(  # type: ignore
                 [train_mask_df, val_mask_df, test_mask_df], mask_field_names

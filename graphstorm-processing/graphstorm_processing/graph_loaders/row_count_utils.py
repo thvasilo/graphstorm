@@ -24,7 +24,8 @@ from joblib import Parallel, delayed
 import pyarrow.parquet as pq
 from pyarrow import fs
 
-from ..data_transformations import s3_utils  # pylint: disable=relative-beyond-top-level
+from graphstorm_processing.constants import FilesystemType
+from graphstorm_processing.data_transformations import s3_utils
 
 
 class ParquetRowCounter:
@@ -43,11 +44,11 @@ class ParquetRowCounter:
         The filesystem type. Can be 'local' or 's3'.
     """
 
-    def __init__(self, metadata_dict: dict, output_prefix: str, filesystem_type: str):
+    def __init__(self, metadata_dict: dict, output_prefix: str, filesystem_type: FilesystemType):
         self.output_prefix = output_prefix
         self.filesystem_type = filesystem_type
         self.metadata_dict = metadata_dict
-        if self.filesystem_type == "s3":
+        if self.filesystem_type == FilesystemType.S3:
             output_bucket, _ = s3_utils.extract_bucket_and_key(output_prefix)
             bucket_region = s3_utils.get_bucket_region(output_bucket)
             # Increase default retries because we are likely to run into

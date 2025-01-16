@@ -17,10 +17,9 @@ limitations under the License.
 import logging
 import math
 import os
-from collections import Counter
 from dataclasses import dataclass
 from math import fsum
-from typing import Any, Optional, Sequence
+from typing import Optional, Sequence
 
 import numpy as np
 from numpy.random import default_rng
@@ -29,19 +28,14 @@ from pyspark.sql.functions import col, when, monotonically_increasing_id
 from pyspark.sql.types import (
     ArrayType,
     IntegerType,
-    FloatType,
+    NumericType
 )
 
 
 from graphstorm_processing.config.label_config_base import LabelConfig
 from graphstorm_processing.constants import (
-    COLUMN_NAME,
     DATA_SPLIT_SET_MASK_COL,
-    MAX_VALUE,
-    MIN_VALUE,
     NODE_MAPPING_STR,
-    SPECIAL_CHARACTERS,
-    VALUE_COUNTS,
 )
 from graphstorm_processing.data_transformations.dist_transformations import (
     DistMultiLabelTransformation,
@@ -124,6 +118,8 @@ class DistLabelLoader:
         A configuration object that describes the label.
     spark : SparkSession
         The SparkSession to use for processing.
+    input_prefix: Optional[str]
+        An input prefix that we use to read custom mask files from.
     """
 
     def __init__(
@@ -156,7 +152,7 @@ class DistLabelLoader:
         Returns
         -------
         DataFrame
-            A Spark DataFrame with the column label transformed, and
+            A Spark DataFrame with the column label transformed,
             the order column maintained.
 
         Raises
@@ -180,97 +176,24 @@ class DistLabelLoader:
                     [self.label_config.label_column], self.spark
                 )
 
+            # TODO: NODE_MAPPING_STR will not exist for edges, need another col here if we still need it...
             transformed_label_with_ids = label_transformer.apply(input_df_with_ids).select(
-                self.label_column, order_column
+                self.label_column, order_column, NODE_MAPPING_STR,
             )
             self.label_map = label_transformer.value_map
             return transformed_label_with_ids
         elif self.label_config.task_type == "regression":
-            if not isinstance(label_type, FloatType):
+            if not isinstance(label_type, NumericType):
                 raise RuntimeError(
-                    "Data type for regression should be FloatType, "
+                    "Data type for regression should be a NumericType, "
                     f"got {label_type} for {self.label_column}"
                 )
-            return input_df_with_ids.select(self.label_column, order_column)
+            return input_df_with_ids.select(self.label_column, order_column, NODE_MAPPING_STR)
         else:
             raise RuntimeError(
                 f"Unknown label task type {self.label_config.task_type} "
                 f"for type: {self.label_column}"
             )
-
-    @staticmethod
-    def _update_label_properties(
-        label_properties: dict[str, Any],
-        node_or_edge_type: str,
-        original_labels: DataFrame,
-        label_config: LabelConfig,
-    ) -> None:
-        """Extracts and stores statistics about labels.
-
-        For a given node or edge type, label configuration and the original
-        (non-transformed) label DataFrame, extract some statistics
-        and store them in `self.label_properties` to be written to
-        storage later. The statistics can be used by downstream tasks.
-
-        Parameters
-        ----------
-        node_or_edge_type : str
-            The node or edge type name for which the label information is being updated.
-        original_labels : DataFrame
-            The original (non-transformed) label DataFrame.
-        label_config : LabelConfig
-            The label configuration object.
-
-        Raises
-        ------
-        RuntimeError
-            In case an invalid task type name is specified in the label config.
-        """
-        label_col = label_config.label_column
-        if node_or_edge_type not in label_properties:
-            label_properties[node_or_edge_type] = Counter()
-        # TODO: Something wrong with the assignment here? Investigate
-        label_properties[node_or_edge_type][COLUMN_NAME] = label_col
-
-        if label_config.task_type == "regression":
-            label_min = original_labels.agg(F.min(label_col).alias("min")).collect()[0]["min"]
-            label_max = original_labels.agg(F.max(label_col).alias("max")).collect()[0]["max"]
-
-            current_min = label_properties[node_or_edge_type].get(MIN_VALUE, float("inf"))
-            current_max = label_properties[node_or_edge_type].get(MAX_VALUE, float("-inf"))
-            label_properties[node_or_edge_type][MIN_VALUE] = min(current_min, label_min)
-            label_properties[node_or_edge_type][MAX_VALUE] = max(current_max, label_max)
-        elif label_config.task_type == "classification":
-            # Collect counts per label
-            if label_config.multilabel:
-                assert label_config.separator
-                # Spark's split function uses a regexp so we
-                # need to escape special chars to be used as separators
-                if label_config.separator in SPECIAL_CHARACTERS:
-                    separator = f"\\{label_config.separator}"
-                else:
-                    separator = label_config.separator
-                label_counts_df = (
-                    original_labels.select(label_col)
-                    .withColumn(label_col, F.explode(F.split(F.col(label_col), separator)))
-                    .groupBy(label_col)
-                    .count()
-                )
-            else:  # Single-label classification
-                label_counts_df = original_labels.groupBy(label_col).count()
-
-            # TODO: Verify correctness here
-            label_counts_dict: Counter = Counter()
-            for label_count_row in label_counts_df.collect():
-                row_dict = label_count_row.asDict()
-                # Label value to count
-                label_counts_dict[row_dict[label_col]] = row_dict["count"]
-
-            label_properties[node_or_edge_type][VALUE_COUNTS] = (
-                label_properties.get(VALUE_COUNTS, Counter()) + label_counts_dict
-            )
-        else:
-            raise RuntimeError(f"Invalid task type: {label_config.task_type}")
 
     def create_split_files_split_rates(
         self,
@@ -343,10 +266,17 @@ class DistLabelLoader:
         split_group = F.udf(multinomial_sample, ArrayType(IntegerType()))
         # Convert label col to string and apply UDF
         # to create one-hot vector indicating train/test/val membership
-        input_col = F.col(label_column).astype("string") if label_column else F.lit("dummy")
-        int_group_df = input_df_with_ids.select(
-            label_column, split_group(input_col).alias(group_col_name), order_column
-        )
+        if label_column:
+            # TODO: Is it necessary to convert to string?
+            input_col = F.col(label_column)
+            int_group_df = input_df_with_ids.select(
+                label_column, split_group(input_col).alias(group_col_name), order_column
+            )
+        else:
+            input_col = F.lit(1)
+            int_group_df = input_df_with_ids.select(
+                split_group(input_col).alias(group_col_name), order_column
+            )
 
         # Reorder and cache because we re-use this DF
         int_group_df = int_group_df.orderBy(order_column).cache()
@@ -433,7 +363,8 @@ class DistLabelLoader:
         else:
             raise ValueError("Unknown mask type")
 
-        assert self.input_prefix, "Custom split files require an input prefix to read data from"
+        assert self.input_prefix is not None, \
+            "Custom split files require an input prefix to read data from"
 
         # Custom data split should only be considered
         # in cases with a limited number of labels.

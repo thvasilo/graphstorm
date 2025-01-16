@@ -251,7 +251,7 @@ def test_csv_input_multi_categorical(spark: SparkSession, check_df_schema):
     long_vector_df = spark.read.csv(data_path, sep=",", header=True)
     dist_categorical_transormation = DistMultiCategoryTransformation(cols=["feat"], separator=";")
 
-    transformed_df = dist_categorical_transormation.apply(long_vector_df)
+    transformed_df = dist_categorical_transormation.apply(long_vector_df).select("feat")
     check_df_schema(transformed_df)
     transformed_rows = transformed_df.collect()
     expected_rows = []

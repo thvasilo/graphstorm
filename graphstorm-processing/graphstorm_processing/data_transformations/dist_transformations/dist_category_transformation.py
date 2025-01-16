@@ -314,6 +314,7 @@ class DistMultiCategoryTransformation(DistributedTransformation):
         return "DistMultiCategoryTransformation"
 
     def apply(self, input_df: DataFrame) -> DataFrame:
+        other_cols = {*input_df.columns} - {self.multi_column}
         col_datatype = input_df.schema[self.multi_column].dataType
         is_array_col = False
         if col_datatype.typeName() == "array":
@@ -327,10 +328,11 @@ class DistMultiCategoryTransformation(DistributedTransformation):
             is_array_col = True
 
         if is_array_col:
-            list_df = input_df.select(self.multi_column).alias(self.multi_column)
+            list_df = input_df.select(F.col(self.multi_column).alias(self.multi_column), *other_cols)
         else:
             list_df = input_df.select(
-                F.split(F.col(self.multi_column), self.separator).alias(self.multi_column)
+                F.split(F.col(self.multi_column), self.separator).alias(self.multi_column),
+                *other_cols
             )
 
         distinct_category_counts = (

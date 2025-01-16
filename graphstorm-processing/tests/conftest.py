@@ -110,7 +110,7 @@ def check_df_schema():
         # Ensure written DF is either flat numerical values or a single numerical list col
         # as that is what the partitioning pipeline expects
 
-        accepted_datatypes = {np.float32, np.float64, np.int32, np.int64}
+        accepted_datatypes = {np.float32, np.float64, np.int32, np.int64, np.int16}
         with tempfile.TemporaryDirectory() as tmpdirname:
             tmp_file_path = os.path.join(tmpdirname, "tmp_file")
             df.coalesce(1).write.parquet(tmp_file_path)
