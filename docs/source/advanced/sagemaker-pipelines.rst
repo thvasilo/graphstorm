@@ -3,7 +3,7 @@
 Using GraphStorm with SageMaker Pipelines
 =========================================
 
-GraphStorm provides integration with Amazon SageMaker Pipelines to automate and orchestrate graph machine learning workflows at scale.
+GraphStorm provides integration with `Amazon SageMaker Pipelines <https://aws.amazon.com/sagemaker-ai/pipelines/>`_ to automate and orchestrate graph machine learning workflows at scale.
 This guide shows you how to use the provided tools to create, configure, and execute SageMaker pipelines for graph construction, training, and inference.
 
 Introduction
@@ -134,6 +134,14 @@ We list those here, with the step name that you can provide in ``--jobs-to-run``
 6. **Inference** (``inference``):
    Runs predictions using your trained model.
 
+The choice of jobs to run will mostly stem from the size of your graph.
+For graphs that can fit into the memory of one machine, a typical
+job sequence would be ``gconstruct train inference``.
+
+For graphs that are too large to fit into one machine, you will need to
+pre-process them using GSProcessing and use distributed GSPartition.
+Such a sequence of jobs would be ``gsprocessing dist_part train inference``.
+
 Configuration Options
 ---------------------
 
@@ -178,6 +186,7 @@ Graph Construction Configuration
 
 * ``--graph-construction-config-filename``: Filename for the graph construction config.
 * ``--graph-construction-args``: Additional parameters to be passed directly to the GConstruct/GSProcessing job.
+  For example you can provide ``--num-processes 8`` to GConstruct to use 8 processes when running graph construction.
 
 Partition Configuration
 ^^^^^^^^^^^^^^^^^^^^^^^
@@ -191,8 +200,10 @@ Training Configuration
 ^^^^^^^^^^^^^^^^^^^^^^
 
 * ``--model-output-path``: S3 path for model output.
-* ``--num-trainers``: Number of trainers (per-instance training processes) to use during training/inference. Set this equal to number of GPUs (Default: 4)
-* ``--train-inference-task-type``: Task type for training and inference. (Required)
+* ``--num-trainers``: Number of trainers (per-instance training processes) to use during training/inference. Set this equal to number of GPUs (Default: 1)
+* ``--train-inference-task-type``: Task type for training and inference, e.g. ``link_prediction``.
+  For a complete list of available options see  `task_type  <https://graphstorm.readthedocs.io/en/latest/cli/model-training-inference/configuration-run.html#general-configurations>`_
+  in the runtime configuration documentation. (Required)
 * ``--train-yaml-s3``: S3 path to the train YAML configuration file.
 * ``--use-graphbolt``: Whether to use GraphBolt for GConstruct, training and inference. (Default: false)
 
@@ -206,6 +217,9 @@ Inference Configuration
 
 Script Paths
 ^^^^^^^^^^^^
+
+The entry point scripts for all tasks exist under
+`https://github.com/awslabs/graphstorm/tree/main/sagemaker/run`_.
 
 * ``--dist-part-script``: Path to DistPartition SageMaker entry point script.
 * ``--gb-convert-script``: Path to GraphBolt partition conversion script.
@@ -253,6 +267,9 @@ GraphBolt enabled faster training, see :ref:`using-graphbolt-ref`. To enable Gra
         --use-graphbolt true
 
 For distributed processing with GraphBolt, you will need to include a ``gb_convert`` step after ``dist_part``:
+When using GConstruct no follow-up job is needed, the pipeline will append ``--use-graphbolt true`` to the
+GConstruct arguments, and the graph files that GConstruct produces are ready for training with
+GraphBolt enabled.
 
 .. code-block:: bash
 
